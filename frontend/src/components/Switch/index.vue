@@ -1,63 +1,68 @@
 <script setup lang="ts">
+import { nextTick } from 'vue'
+
+import i18n from '@/lang'
+
 interface Props {
   size?: 'default' | 'small'
   border?: 'default' | 'square'
+  label?: string
+  disabled?: boolean
 }
 
-withDefaults(defineProps<Props>(), {
+const props = withDefaults(defineProps<Props>(), {
   size: 'default',
-  border: 'default'
+  border: 'default',
+  label: '',
+  disabled: false,
 })
 
-const model = defineModel<boolean>()
+const model = defineModel<boolean>({ default: false })
 
-const emits = defineEmits(['change'])
+const emits = defineEmits<{
+  (e: 'change', val: boolean): void
+}>()
+
+const { t } = i18n.global
 
 const toggle = () => {
+  if (props.disabled) return
   model.value = !model.value
-  emits('change', !model.value)
+  nextTick(() => emits('change', model.value))
 }
 </script>
 
 <template>
   <div
+    v-tips.slow="label"
+    :class="[
+      size,
+      border,
+      model ? 'on' : 'off',
+      border === 'square' ? 'rounded-4' : 'rounded-full',
+      { 'cursor-not-allowed': disabled },
+    ]"
+    class="gui-switch relative cursor-pointer h-24 inline-flex items-center text-12 duration-200"
     @click="toggle"
-    :style="{ 'justify-content': !model ? 'flex-start' : 'flex-end' }"
-    :class="[size, border, model ? 'on' : 'off']"
-    class="switch"
   >
-    <div v-if="$slots.default && !model" class="slot">
-      <slot />
-    </div>
+    <div
+      :class="[border === 'square' ? 'rounded-4' : 'rounded-full']"
+      class="dot absolute h-18 w-18 duration-200"
+    ></div>
 
-    <div class="dot"></div>
-
-    <div v-if="$slots.default && model" class="slot">
-      <slot />
+    <div v-if="$slots.default || label" class="slot line-clamp-1 break-all">
+      <span v-if="label">{{ t(label) }}</span>
+      <slot v-if="$slots.default"></slot>
     </div>
   </div>
 </template>
 
 <style lang="less" scoped>
-.switch {
-  cursor: pointer;
+.gui-switch {
   min-width: 50px;
-  height: 24px;
-  display: inline-flex;
-  padding: 0 3px;
-  align-items: center;
-  border-radius: 24px;
-  transition: all 0.2s;
-  font-size: 12px;
-  color: var(--card-color);
-  .dot {
-    width: 18px;
-    height: 18px;
-    border-radius: 18px;
-  }
-  .slot {
-    padding: 0 4px;
-  }
+  // .slot {
+  //   transition: margin 0.2s;
+  // }
 }
 
 .small {
@@ -69,25 +74,79 @@ const toggle = () => {
 }
 
 .square {
-  border-radius: 4px;
   .dot {
     width: 4px;
-    border-radius: 2px;
   }
 }
 
 .on {
   color: #fff;
   background-color: var(--switch-on-bg);
+  &:hover {
+    background-color: var(--switch-on-hover-bg);
+  }
   .dot {
+    left: calc(100% - 22px);
     background-color: var(--switch-on-dot-bg);
+  }
+
+  .slot {
+    margin-right: 26px;
+    margin-left: 10px;
+  }
+
+  &.small {
+    .dot {
+      left: calc(100% - 16px);
+    }
+    .slot {
+      margin-right: 20px;
+      margin-left: 8px;
+    }
+  }
+
+  &.square {
+    .dot {
+      left: calc(100% - 8px);
+    }
+    .slot {
+      margin-right: 12px;
+      margin-left: 8px;
+    }
   }
 }
 
 .off {
+  color: var(--card-color);
   background-color: var(--switch-off-bg);
+  &:hover {
+    background-color: var(--switch-off-hover-bg);
+  }
   .dot {
+    left: 4px;
     background-color: var(--switch-off-dot-bg);
+  }
+
+  .slot {
+    margin-left: 26px;
+    margin-right: 10px;
+  }
+
+  &.small {
+    .dot {
+      left: 4px;
+    }
+    .slot {
+      margin-left: 20px;
+      margin-right: 8px;
+    }
+  }
+
+  &.square {
+    .slot {
+      margin-left: 12px;
+      margin-right: 8px;
+    }
   }
 }
 </style>

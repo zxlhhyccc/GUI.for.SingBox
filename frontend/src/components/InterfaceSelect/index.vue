@@ -10,7 +10,7 @@ interface Props {
 const model = defineModel<string>()
 
 withDefaults(defineProps<Props>(), {
-  border: true
+  border: true,
 })
 
 const emits = defineEmits(['change'])
@@ -25,15 +25,13 @@ GetInterfaces().then((res) => {
   options.value = [
     {
       label: 'common.auto',
-      value: ''
+      value: '',
     },
-    ...res.map((v) => ({ label: v, value: v }))
+    ...res.map((v) => ({ label: v, value: v })),
   ]
 })
 </script>
 
 <template>
-  <Select v-model="model" @change="onChange" :options="options" :border="border" />
+  <Select v-model="model" v-bind="$attrs" :options="options" :border="border" @change="onChange" />
 </template>
-
-<style lang="less" scoped></style>

@@ -1,132 +1,166 @@
-import { Request } from '@/utils/request'
-import { WebSockets } from '@/utils/websockets'
-import { useAppSettingsStore, useProfilesStore } from '@/stores'
-import type {
-  KernelApiConfig,
-  KernelApiProviders,
-  KernelApiProxies,
-  KernelApiConnections,
-  KernelConnectionsWS,
-  KernelApiProvidersRules
-} from './kernel.schema'
+import { Request } from '@/api/request'
+import { WebSockets } from '@/api/websocket'
+import { useProfilesStore } from '@/stores'
+import { formatProxyHost, normalizeProxyHost } from '@/utils'
 
-enum Api {
+import type {
+  CoreApiConfig,
+  CoreApiProxies,
+  CoreApiConnections,
+  CoreApiWsDataMap,
+} from '@/types/kernel'
+
+type WsKey = keyof CoreApiWsDataMap
+type WsChannel<K extends WsKey> = {
+  url: string
+  params?: Recordable
+  handlers: Array<(data: CoreApiWsDataMap[K]) => void>
+  isActive: boolean
+  connect?: () => void
+  disconnect?: () => void
+}
+
+export enum Api {
   Configs = '/configs',
   Memory = '/memory',
   Proxies = '/proxies',
-  Providers = '/providers/proxies',
-  GroupDelay = '/group/{0}/delay',
   ProxyDelay = '/proxies/{0}/delay',
   Connections = '/connections',
   Traffic = '/traffic',
   Logs = '/logs',
-  ProvidersRules = '/providers/rules'
 }
 
-const getCurrentProfile = () => {
-  const appSettingsStore = useAppSettingsStore()
-  const profilesStore = useProfilesStore()
-  return profilesStore.getProfileById(appSettingsStore.app.kernel.profile)
-}
-
-const setupKernelApi = () => {
-  let base = 'http://127.0.0.1:20123'
-  let bearer = ''
-
-  const profile = getCurrentProfile()
-
-  if (profile) {
-    const controller = profile.advancedConfig['external-controller'] || '127.0.0.1:20123'
-    const [, port = 20123] = controller.split(':')
-    base = `http://127.0.0.1:${port}`
-    bearer = profile.advancedConfig.secret
+const resolveController = (controller: string, defaultPort: number) => {
+  const trimmed = controller.trim()
+  if (!trimmed) {
+    return {
+      host: '127.0.0.1',
+      port: defaultPort,
+    }
   }
 
-  request.base = base
-  request.bearer = bearer
-}
-
-const setupKernelWSApi = () => {
-  let base = 'ws://127.0.0.1:20123'
-  let bearer = ''
-
-  const profile = getCurrentProfile()
-
-  if (profile) {
-    const controller = profile.advancedConfig['external-controller'] || '127.0.0.1:20123'
-    const [, port = 20123] = controller.split(':')
-    base = `ws://127.0.0.1:${port}`
-    bearer = profile.advancedConfig.secret
+  if (trimmed.startsWith('[')) {
+    const match = trimmed.match(/^\[([^\]]+)\](?::(\d+))?$/)
+    return {
+      host: normalizeProxyHost(match?.[1] || ''),
+      port: Number(match?.[2] || defaultPort),
+    }
   }
 
-  websockets.base = base
-  websockets.bearer = bearer
+  const separatorIndex = trimmed.lastIndexOf(':')
+  if (separatorIndex === -1) {
+    return {
+      host: normalizeProxyHost(trimmed),
+      port: defaultPort,
+    }
+  }
+
+  return {
+    host: normalizeProxyHost(trimmed.slice(0, separatorIndex).trim()),
+    port: Number(trimmed.slice(separatorIndex + 1)) || defaultPort,
+  }
 }
 
-const request = new Request({ beforeRequest: setupKernelApi, timeout: 60 * 1000 })
+const setupCoreApi = (protocol: 'http' | 'ws') => {
+  const { currentProfile: profile } = useProfilesStore()
 
-const websockets = new WebSockets({ beforeConnect: setupKernelWSApi })
+  let base = `${protocol}://127.0.0.1:20123`
+  let bearer = ''
 
-export const getConfigs = () => request.get<KernelApiConfig>(Api.Configs)
+  if (profile) {
+    const controller = profile.experimental.clash_api.external_controller || '127.0.0.1:20123'
+    const { host, port } = resolveController(controller, 20123)
+    base = `${protocol}://${formatProxyHost(host)}:${port}`
+    bearer = profile.experimental.clash_api.secret
+  }
 
+  if (protocol === 'http') {
+    request.base = base
+    request.bearer = bearer
+  } else {
+    websocket.base = base
+    websocket.bearer = bearer
+  }
+}
+
+const request = new Request({ beforeRequest: () => setupCoreApi('http'), timeout: 60 * 1000 })
+const websocket = new WebSockets({ beforeConnect: () => setupCoreApi('ws') })
+
+const wsChannels: {
+  [K in WsKey]: WsChannel<K>
+} = {
+  logs: { url: Api.Logs, isActive: false, handlers: [], params: { level: 'debug' } },
+  memory: { url: Api.Memory, isActive: false, handlers: [] },
+  traffic: { url: Api.Traffic, isActive: false, handlers: [] },
+  connections: { url: Api.Connections, isActive: false, handlers: [] },
+}
+
+const createCoreWSHandlerRegister = <K extends WsKey>(key: K) => {
+  const channel = wsChannels[key]
+
+  return (cb: (data: CoreApiWsDataMap[K]) => void) => {
+    channel.handlers.push(cb)
+
+    if (!channel.isActive && channel.connect) {
+      channel.connect()
+      channel.isActive = true
+    }
+
+    const unregister = () => {
+      const idx = channel.handlers.indexOf(cb)
+      idx !== -1 && channel.handlers.splice(idx, 1)
+      if (channel.isActive && channel.disconnect && channel.handlers.length === 0) {
+        channel.disconnect()
+        channel.isActive = false
+      }
+    }
+    return unregister
+  }
+}
+
+// restful api
+export const probeApiAvailability = () => request.get('/version')
+export const getConfigs = () => request.get<CoreApiConfig>(Api.Configs)
 export const setConfigs = (body = {}) => request.patch<null>(Api.Configs, body)
-
-export const getProxies = () => request.get<KernelApiProxies>(Api.Proxies)
-
-export const getProviders = () => request.get<KernelApiProviders>(Api.Providers)
-
-export const getConnections = () => request.get<KernelApiConnections>(Api.Connections)
-
+export const getProxies = () => request.get<CoreApiProxies>(Api.Proxies)
+export const getConnections = () => request.get<CoreApiConnections>(Api.Connections)
 export const deleteConnection = (id: string) => request.delete<null>(Api.Connections + '/' + id)
-
 export const useProxy = (group: string, proxy: string) => {
   return request.put<null>(Api.Proxies + '/' + group, { name: proxy })
 }
-
-export const getGroupDelay = (group: string, url: string) => {
-  return request.get<Record<string, number>>(Api.GroupDelay.replace('{0}', group), {
-    url,
-    timeout: 5000
-  })
-}
-
-export const getProxyDelay = (proxy: string, url: string) => {
+export const getProxyDelay = (proxy: string, url: string, timeout: number) => {
   return request.get<Record<string, number>>(Api.ProxyDelay.replace('{0}', proxy), {
     url,
-    timeout: 5000
+    timeout,
   })
 }
 
-export const getProvidersRules = () => request.get<KernelApiProvidersRules>(Api.ProvidersRules)
-
-export const updateProvidersRules = (ruleset: string) => {
-  return request.put<null>(Api.ProvidersRules + '/' + ruleset)
+// websocket api
+export const onLogs = createCoreWSHandlerRegister('logs')
+export const onMemory = createCoreWSHandlerRegister('memory')
+export const onTraffic = createCoreWSHandlerRegister('traffic')
+export const onConnections = createCoreWSHandlerRegister('connections')
+export const initWebsocket = () => {
+  Object.values(wsChannels).forEach((channel) => {
+    const { connect, disconnect } = websocket.createWS({
+      url: channel.url,
+      params: channel.params,
+      cb: (data) => channel.handlers.forEach((cb) => cb(data)),
+    })
+    channel.connect = connect
+    channel.disconnect = disconnect
+    channel.isActive = false
+    if (channel.handlers.length > 0) {
+      channel.connect()
+      channel.isActive = true
+    }
+  })
 }
-
-export const updateProvidersProxies = (provider: string) => {
-  return request.put<null>(Api.Providers + '/' + provider)
-}
-
-type KernelWSOptions = {
-  onConnections: (data: any) => void
-  onTraffic: (data: any) => void
-  onMemory: (data: any) => void
-}
-
-export const getKernelWS = ({ onConnections, onTraffic, onMemory }: KernelWSOptions) => {
-  return websockets.createWS([
-    { name: 'Connections', url: Api.Connections, cb: onConnections },
-    { name: 'Traffic', url: Api.Traffic, cb: onTraffic },
-    { name: 'Memory', url: Api.Memory, cb: onMemory }
-  ])
-}
-
-export const getKernelLogsWS = (onLogs: (data: any) => void) => {
-  return websockets.createWS([
-    { name: 'Logs', url: Api.Logs, cb: onLogs, params: { level: 'debug' } }
-  ])
-}
-
-export const getKernelConnectionsWS = (onConnections: (data: KernelConnectionsWS) => void) => {
-  return websockets.createWS([{ name: 'Connections', url: Api.Connections, cb: onConnections }])
+export const destroyWebsocket = () => {
+  Object.values(wsChannels).forEach((channel) => {
+    channel.disconnect?.()
+    channel.connect = undefined
+    channel.disconnect = undefined
+    channel.isActive = false
+  })
 }

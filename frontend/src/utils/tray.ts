@@ -1,23 +1,30 @@
-import i18n from '@/lang'
-import { Theme, type MenuItem, Color, Lang } from '@/constant'
-import { useAppSettingsStore, useKernelApiStore, useEnvStore, usePluginsStore } from '@/stores'
 import {
   Notify,
   RestartApp,
   EventsOn,
   EventsOff,
-  UpdateTray,
-  UpdateTrayMenus,
-  ShowMainWindow
+  ShowMainWindow,
+  UpdateTrayAndMenus,
 } from '@/bridge'
+import { ColorOptions, ThemeOptions } from '@/constant/app'
+import { ModeOptions } from '@/constant/kernel'
+import { OS } from '@/enums/app'
+import i18n from '@/lang'
+import {
+  useAppSettingsStore,
+  useKernelApiStore,
+  useEnvStore,
+  usePluginsStore,
+  useAppStore,
+  useProfilesStore,
+} from '@/stores'
 import {
   debounce,
   exitApp,
   handleChangeMode,
-  handleUseProxy,
-  sampleID,
   APP_TITLE,
-  APP_VERSION
+  APP_VERSION,
+  handleUseProxy,
 } from '@/utils'
 
 const getTrayIcons = () => {
@@ -26,41 +33,42 @@ const getTrayIcons = () => {
   const kernelApiStore = useKernelApiStore()
 
   const themeMode = appSettings.themeMode
-  let icon = `data/.cache/icons/tray_normal_${themeMode}.ico`
+  const ext = envStore.env.os === OS.Linux ? '.png' : '.ico'
+  const folder = envStore.env.os === OS.Linux ? 'imgs' : 'icons'
+  let icon = `data/.cache/${folder}/tray_normal_${themeMode}${ext}`
 
-  if (appSettings.app.kernel.running) {
+  if (kernelApiStore.running) {
     if (kernelApiStore.config.tun.enable) {
-      icon = `data/.cache/icons/tray_tun_${themeMode}.ico`
+      icon = `data/.cache/${folder}/tray_tun_${themeMode}${ext}`
     } else if (envStore.systemProxy) {
-      icon = `data/.cache/icons/tray_proxy_${themeMode}.ico`
+      icon = `data/.cache/${folder}/tray_proxy_${themeMode}${ext}`
     }
   }
   return icon
 }
 
-const menuEvents: string[] = []
-
-const generateUniqueEventsForMenu = (menus: MenuItem[]) => {
+const generateUniqueEventsForMenu = (menus: App.MenuItem[]) => {
   const { t } = i18n.global
+  const MenuItemHandlerMap: Recordable<() => void> = {}
 
-  menuEvents.forEach((event) => EventsOff(event))
-  menuEvents.splice(0)
+  EventsOff('onMenuItemClick')
+  EventsOn('onMenuItemClick', (id) => MenuItemHandlerMap[id]?.())
 
-  function processMenu(menu: MenuItem) {
+  let index = 0
+  function processMenu(menu: App.MenuItem) {
     const _menu = { ...menu, text: t(menu.text || ''), tooltip: t(menu.tooltip || '') }
     const { event, children } = menu
 
     if (event) {
-      const _event = sampleID()
-      _menu.event = _event
-      menuEvents.push(_event)
-      EventsOn(_event, event as any)
+      _menu.event = index + '_' + menu.text
+      MenuItemHandlerMap[_menu.event] = event as any
     }
 
     if (children && children.length > 0) {
       _menu.children = children.map(processMenu)
     }
 
+    index += 1
     return _menu
   }
 
@@ -68,32 +76,47 @@ const generateUniqueEventsForMenu = (menus: MenuItem[]) => {
 }
 
 const getTrayMenus = () => {
+  const appStore = useAppStore()
   const envStore = useEnvStore()
   const appSettings = useAppSettingsStore()
   const kernelApiStore = useKernelApiStore()
   const pluginsStore = usePluginsStore()
+  const profilesStore = useProfilesStore()
 
-  const { proxies } = kernelApiStore
+  let pluginMenus: App.MenuItem[] = []
+  let pluginMenusHidden = !appSettings.app.addPluginToMenu
 
-  const groupsMenus: MenuItem[] = (() => {
+  let groupMenus: App.MenuItem[] = []
+  const groupMenusHidden = !appSettings.app.addGroupToMenu
+
+  if (!groupMenusHidden) {
+    const { proxies } = kernelApiStore
     if (!proxies) return []
-    return Object.values(proxies)
-      .filter((v) => v.all && v.name !== 'GLOBAL')
+    const hiddenList = (profilesStore.currentProfile?.outbounds || []).flatMap((v) =>
+      v.hidden ? v.tag : [],
+    )
+    groupMenus = Object.values(proxies)
+      .filter(
+        (v) =>
+          ['Selector', 'URLTest'].includes(v.type) &&
+          v.name !== 'GLOBAL' &&
+          !hiddenList.includes(v.name),
+      )
       .concat(proxies.GLOBAL || [])
       .map((group) => {
-        const all = group.all
+        const all = (group.all || [])
           .filter((proxy) => {
-            const history = proxies[proxy].history || []
-            const alive = history[history.length - 1]?.delay > 0
+            const history = proxies[proxy]?.history || []
+            const alive = (history[history.length - 1]?.delay || 0) > 0
             return (
               appSettings.app.kernel.unAvailable ||
               ['direct', 'block'].includes(proxy) ||
-              proxies[proxy].all ||
+              proxies[proxy]?.all ||
               alive
             )
           })
           .map((proxy) => {
-            const history = proxies[proxy].history || []
+            const history = proxies[proxy]?.history || []
             const delay = history[history.length - 1]?.delay || 0
             return { ...proxies[proxy], delay }
           })
@@ -115,22 +138,20 @@ const getTrayMenus = () => {
               type: 'item',
               text: proxy.name,
               show: true,
+              checkable: true,
               checked: proxy.name === group.now,
               event: () => {
                 handleUseProxy(group, proxy)
-              }
+              },
             }
-          })
+          }),
         }
       })
-  })()
-
-  let pluginMenus: MenuItem[] = []
-  let pluginMenusHidden = !appSettings.app.addPluginToMenu
+  }
 
   if (!pluginMenusHidden) {
     const filtered = pluginsStore.plugins.filter(
-      (plugin) => Object.keys(plugin.menus).length && !plugin.disabled
+      (plugin) => Object.keys(plugin.menus).length && !plugin.disabled,
     )
     pluginMenusHidden = filtered.length === 0
     pluginMenus = filtered.map(({ id, name, menus }) => {
@@ -145,54 +166,41 @@ const getTrayMenus = () => {
               pluginsStore.manualTrigger(id, event as any).catch((err: any) => {
                 Notify('Error', err.message || err)
               })
-            }
+            },
           }
-        })
+        }),
       }
     })
   }
 
-  const trayMenus: MenuItem[] = [
+  const trayMenus: App.MenuItem[] = [
     {
       type: 'item',
       text: 'tray.showMainWindow',
-      hidden: envStore.env.os === 'windows',
-      event: ShowMainWindow
+      hidden: envStore.env.os === OS.Windows,
+      event: ShowMainWindow,
     },
     {
       type: 'separator',
-      hidden: envStore.env.os === 'windows',
+      hidden: envStore.env.os === OS.Windows,
     },
     {
       type: 'item',
       text: 'kernel.mode',
-      hidden: !appSettings.app.kernel.running,
-      children: [
-        {
-          type: 'item',
-          text: 'kernel.global',
-          checked: kernelApiStore.config.mode === 'global',
-          event: () => handleChangeMode('global')
-        },
-        {
-          type: 'item',
-          text: 'kernel.rule',
-          checked: kernelApiStore.config.mode === 'rule',
-          event: () => handleChangeMode('rule')
-        },
-        {
-          type: 'item',
-          text: 'kernel.direct',
-          checked: kernelApiStore.config.mode === 'direct',
-          event: () => handleChangeMode('direct')
-        }
-      ]
+      hidden: !kernelApiStore.running,
+      children: ModeOptions.map((mode) => ({
+        type: 'item',
+        text: mode.label,
+        checkable: true,
+        checked: kernelApiStore.config.mode === mode.value,
+        event: () => handleChangeMode(mode.value),
+      })),
     },
     {
       type: 'item',
       text: 'tray.proxyGroup',
-      hidden: !appSettings.app.kernel.running,
-      children: groupsMenus
+      hidden: groupMenusHidden || !kernelApiStore.running,
+      children: groupMenus,
     },
     {
       type: 'item',
@@ -201,72 +209,64 @@ const getTrayMenus = () => {
         {
           type: 'item',
           text: 'tray.startKernel',
-          hidden: appSettings.app.kernel.running,
-          event: kernelApiStore.startKernel
+          hidden: kernelApiStore.running,
+          event: kernelApiStore.startCore,
         },
         {
           type: 'item',
           text: 'tray.restartKernel',
-          hidden: !appSettings.app.kernel.running,
-          event: kernelApiStore.restartKernel
+          hidden: !kernelApiStore.running,
+          event: kernelApiStore.restartCore,
         },
         {
           type: 'item',
           text: 'tray.stopKernel',
-          hidden: !appSettings.app.kernel.running,
-          event: kernelApiStore.stopKernel
-        }
-      ]
+          hidden: !kernelApiStore.running,
+          event: kernelApiStore.stopCore,
+        },
+      ],
     },
     {
       type: 'separator',
-      hidden: !appSettings.app.kernel.running
+      hidden: !kernelApiStore.running,
     },
     {
       type: 'item',
       text: 'tray.proxy',
-      hidden: !appSettings.app.kernel.running,
+      hidden: !kernelApiStore.running,
       children: [
         {
           type: 'item',
           text: 'tray.setSystemProxy',
           hidden: envStore.systemProxy,
-          event: async () => {
-            await kernelApiStore.updateConfig('tun', false)
-            await envStore.setSystemProxy()
-          }
+          event: envStore.setSystemProxy,
         },
         {
           type: 'item',
           text: 'tray.clearSystemProxy',
           hidden: !envStore.systemProxy,
-          event: envStore.clearSystemProxy
-        }
-      ]
+          event: envStore.clearSystemProxy,
+        },
+      ],
     },
     {
       type: 'item',
       text: 'tray.tun',
-      hidden: !appSettings.app.kernel.running,
+      hidden: !kernelApiStore.running,
       children: [
         {
           type: 'item',
           text: 'tray.enableTunMode',
           hidden: kernelApiStore.config.tun.enable,
-          event: async () => {
-            await envStore.clearSystemProxy()
-            await kernelApiStore.updateConfig('tun', true)
-          }
+          event: () => kernelApiStore.updateConfig('tun', { enable: true }),
         },
         {
           type: 'item',
           text: 'tray.disableTunMode',
           hidden: !kernelApiStore.config.tun.enable,
-          event: async () => {
-            await kernelApiStore.updateConfig('tun', false)
-          }
-        }
-      ]
+          event: () => kernelApiStore.updateConfig('tun', { enable: false }),
+        },
+      ],
     },
     {
       type: 'item',
@@ -275,122 +275,75 @@ const getTrayMenus = () => {
         {
           type: 'item',
           text: 'settings.theme.name',
-          children: [
-            {
-              type: 'item',
-              text: 'settings.theme.dark',
-              checked: appSettings.app.theme === Theme.Dark,
-              event: () => (appSettings.app.theme = Theme.Dark)
-            },
-            {
-              type: 'item',
-              text: 'settings.theme.light',
-              checked: appSettings.app.theme === Theme.Light,
-              event: () => (appSettings.app.theme = Theme.Light)
-            },
-            {
-              type: 'item',
-              text: 'settings.theme.auto',
-              checked: appSettings.app.theme === Theme.Auto,
-              event: () => (appSettings.app.theme = Theme.Auto)
-            }
-          ]
+          children: ThemeOptions.map((theme) => ({
+            type: 'item',
+            text: theme.label,
+            checkable: true,
+            checked: appSettings.app.theme === theme.value,
+            event: () => (appSettings.app.theme = theme.value),
+          })),
         },
         {
           type: 'item',
           text: 'settings.color.name',
-          children: [
-            {
-              type: 'item',
-              text: 'settings.color.default',
-              checked: appSettings.app.color === Color.Default,
-              event: () => (appSettings.app.color = Color.Default)
-            },
-            {
-              type: 'item',
-              text: 'settings.color.orange',
-              checked: appSettings.app.color === Color.Orange,
-              event: () => (appSettings.app.color = Color.Orange)
-            },
-            {
-              type: 'item',
-              text: 'settings.color.pink',
-              checked: appSettings.app.color === Color.Pink,
-              event: () => (appSettings.app.color = Color.Pink)
-            },
-            {
-              type: 'item',
-              text: 'settings.color.red',
-              checked: appSettings.app.color === Color.Red,
-              event: () => (appSettings.app.color = Color.Red)
-            },
-            {
-              type: 'item',
-              text: 'settings.color.skyblue',
-              checked: appSettings.app.color === Color.Skyblue,
-              event: () => (appSettings.app.color = Color.Skyblue)
-            },
-            {
-              type: 'item',
-              text: 'settings.color.green',
-              checked: appSettings.app.color === Color.Green,
-              event: () => (appSettings.app.color = Color.Green)
-            }
-          ]
+          children: ColorOptions.map((color) => ({
+            type: 'item',
+            text: color.label,
+            checkable: true,
+            checked: appSettings.app.color === color.value,
+            event: () => (appSettings.app.color = color.value),
+          })),
         },
         {
           type: 'item',
           text: 'settings.lang.name',
-          children: [
-            {
-              type: 'item',
-              text: 'settings.lang.zh',
-              checked: appSettings.app.lang === Lang.ZH,
-              event: () => (appSettings.app.lang = Lang.ZH)
-            },
-            {
-              type: 'item',
-              text: 'settings.lang.en',
-              checked: appSettings.app.lang === Lang.EN,
-              event: () => (appSettings.app.lang = Lang.EN)
-            }
-          ]
-        }
-      ]
+          children: appStore.locales.map((v) => ({
+            type: 'item',
+            text: v.label,
+            checkable: true,
+            checked: appSettings.app.lang === v.value,
+            event: () => (appSettings.app.lang = v.value),
+          })),
+        },
+      ],
     },
     {
       type: 'item',
       text: 'tray.plugins',
       hidden: pluginMenusHidden,
-      children: pluginMenus
+      children: pluginMenus,
     },
     {
-      type: 'separator'
+      type: 'separator',
     },
     {
       type: 'item',
       text: 'tray.restart',
       tooltip: 'tray.restartTip',
-      event: RestartApp
+      event: RestartApp,
     },
     {
       type: 'item',
       text: 'tray.exit',
       tooltip: 'tray.exitTip',
-      event: exitApp
-    }
+      event: exitApp,
+    },
   ]
 
-  return generateUniqueEventsForMenu(trayMenus)
+  return trayMenus
 }
 
-export const updateTrayMenus = debounce(async () => {
+export const updateTrayAndMenus = debounce(async () => {
   const trayMenus = getTrayMenus()
   const trayIcons = getTrayIcons()
+  const pluginsStore = usePluginsStore()
 
-  const isDarwin = useEnvStore().env.os === 'darwin'
+  const isDarwin = useEnvStore().env.os === OS.Darwin
   const title = isDarwin ? '' : APP_TITLE
 
-  await UpdateTray({ icon: trayIcons, title, tooltip: APP_TITLE + ' ' + APP_VERSION })
-  await UpdateTrayMenus(trayMenus as any)
+  const tray = { icon: trayIcons, title, tooltip: APP_TITLE + ' ' + APP_VERSION }
+
+  const [finalTray, finalMenus] = await pluginsStore.onTrayUpdateTrigger(tray, trayMenus)
+
+  await UpdateTrayAndMenus(finalTray, generateUniqueEventsForMenu(finalMenus) as any)
 }, 500)

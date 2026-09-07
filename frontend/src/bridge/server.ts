@@ -1,7 +1,7 @@
-import * as App from '@wails/go/bridge/App'
+import * as Bridge from '@wails/go/bridge/App'
 import { EventsOn, EventsEmit, EventsOff } from '@wails/runtime/runtime'
 
-type RequestType = {
+interface Request {
   id: string
   method: string
   url: string
@@ -9,27 +9,56 @@ type RequestType = {
   body: string
 }
 
-type ResponseType = {
+interface Response {
   status: number
   headers: Record<string, string>
   body: string
   options: { mode: 'Binary' | 'Text' }
 }
 
+interface ServerOptions {
+  Cert?: string
+  Key?: string
+  StaticPath?: string
+  StaticRoute?: string
+  StaticHeaders?: Recordable
+  UploadPath?: string
+  UploadRoute?: string
+  UploadHeaders?: Recordable
+  MaxUploadSize?: number
+}
+
 type HttpServerHandler = (
-  req: RequestType,
+  req: Request,
   res: {
     end: (
-      status: ResponseType['status'],
-      headers: ResponseType['headers'],
-      body: ResponseType['body'],
-      options: ResponseType['options']
+      status: Response['status'],
+      headers: Response['headers'],
+      body: Response['body'],
+      options: Response['options'],
     ) => void
-  }
+  },
 ) => Promise<void>
 
-export const StartServer = async (address: string, id: string, handler: HttpServerHandler) => {
-  const { flag, data } = await App.StartServer(address, id)
+export const StartServer = async (
+  address: string,
+  id: string,
+  handler: HttpServerHandler,
+  options: ServerOptions = {},
+) => {
+  const _options: Required<ServerOptions> = {
+    Cert: '',
+    Key: '',
+    StaticPath: '', // default: /static
+    StaticRoute: '/static/',
+    StaticHeaders: {},
+    UploadPath: '', // default: /upload
+    UploadRoute: '/upload',
+    UploadHeaders: {},
+    MaxUploadSize: 50 * 1024 * 1024, // 50MB
+    ...options,
+  }
+  const { flag, data } = await Bridge.StartServer(address, id, _options)
   if (!flag) {
     throw data
   }
@@ -43,13 +72,13 @@ export const StartServer = async (address: string, id: string, handler: HttpServ
           method,
           url,
           headers: Object.entries(headers).reduce((p, c: any) => ({ ...p, [c[0]]: c[1][0] }), {}),
-          body
+          body,
         },
         {
           end: (status, headers, body, options = { mode: 'Text' }) => {
             EventsEmit(id, status, JSON.stringify(headers), body, JSON.stringify(options))
-          }
-        }
+          },
+        },
       )
     } catch (err: any) {
       console.log('Server handler err:', err, id)
@@ -58,7 +87,7 @@ export const StartServer = async (address: string, id: string, handler: HttpServ
         500,
         JSON.stringify({ 'Content-Type': 'text/plain; charset=utf-8' }),
         err.message || err,
-        JSON.stringify({ Mode: 'Text' })
+        JSON.stringify({ Mode: 'Text' }),
       )
     }
   })
@@ -66,7 +95,7 @@ export const StartServer = async (address: string, id: string, handler: HttpServ
 }
 
 export const StopServer = async (serverID: string) => {
-  const { flag, data } = await App.StopServer(serverID)
+  const { flag, data } = await Bridge.StopServer(serverID)
   if (!flag) {
     throw data
   }
@@ -75,7 +104,7 @@ export const StopServer = async (serverID: string) => {
 }
 
 export const ListServer = async () => {
-  const { flag, data } = await App.ListServer()
+  const { flag, data } = await Bridge.ListServer()
   if (!flag) {
     throw data
   }

@@ -1,360 +1,770 @@
-import { sampleID } from '@/utils'
-import type { ProfileType } from '@/stores'
-import { ProxyGroup, FinalDnsType } from '@/constant'
+import {
+  LogLevel,
+  Inbound,
+  Outbound,
+  TunStack,
+  ClashMode,
+  RulesetType,
+  RulesetFormat,
+  RuleType,
+  RuleAction,
+  Strategy,
+  DnsServer,
+} from '@/enums/kernel'
 import i18n from '@/lang'
+import { generateSecureKey, sampleID } from '@/utils'
+
+import { DefaultTestURL } from './app'
+
 const { t } = i18n.global
 
-export const GeneralConfigDefaults = (): ProfileType['generalConfig'] => ({
-  mode: 'rule',
-  'mixed-port': 20122,
-  'allow-lan': false,
-  'log-level': 'info',
-  'interface-name': ''
+const DefaultOutboundIds = {
+  Select: 'outbound-select',
+  Urltest: 'outbound-urltest',
+  Direct: 'outbound-direct',
+  Block: 'outbound-block',
+  Fallback: 'outbound-fallback',
+  Global: 'outbound-global',
+}
+
+const DefaultInboundIds = {
+  MixedIn: 'mixed-in',
+  Tun: 'tun-in',
+}
+
+const DefaultRulesetIds = {
+  CATEGORY_ADS: 'Category-Ads',
+  GEOIP_CN: 'GeoIP-CN',
+  GEOSITE_CN: 'GeoSite-CN',
+  GEOLOCATION_NOT_CN: 'GeoLocation-!CN',
+  GEOSITE_PRIVATE: 'GeoSite-Private',
+  GEOIP_PRIVATE: 'GeoIP-Private',
+}
+
+const DefaultDnsServersIds = {
+  LocalDns: 'Local-DNS',
+  RemoteDns: 'Remote-DNS',
+  FakeIP: 'Fake-IP',
+  LocalDnsResolver: 'Local-DNS-Resolver',
+  RemoteDnsResolver: 'Remote-DNS-Resolver',
+}
+
+export const DefaultLog = (): App.Log => ({
+  disabled: false,
+  level: LogLevel.Info,
+  output: '',
+  timestamp: false,
 })
 
-export const AdvancedConfigDefaults = (): ProfileType['advancedConfig'] => ({
-  port: 0,
-  'socks-port': 0,
-  secret: sampleID(),
-  'external-controller': '127.0.0.1:20123',
-  'external-ui': '',
-  'external-ui-url': '',
-  profile: {
-    'store-cache': true,
-    'store-fake-ip': true,
-    'store-rdrc': false
+export const DefaultExperimental = (): App.Experimental => ({
+  clash_api: {
+    external_controller: '127.0.0.1:20123',
+    external_ui: '',
+    external_ui_download_url: '',
+    external_ui_download_detour: DefaultOutboundIds.Direct,
+    secret: generateSecureKey(),
+    default_mode: ClashMode.Rule,
+    access_control_allow_origin: ['*'],
+    access_control_allow_private_network: false,
   },
-  domain_strategy: 'ipv4_only',
-  'tcp-fast-open': false,
-  'tcp-multi-path': false,
-  'udp-fragment': false,
-  sniff: true,
-  'sniff-override-destination': false
+  cache_file: {
+    enabled: true,
+    path: 'cache.db',
+    cache_id: sampleID(),
+    store_fakeip: true,
+    store_dns: true,
+  },
 })
 
-export const TunConfigDefaults = (): ProfileType['tunConfig'] => ({
-  enable: false,
-  stack: 'Mixed',
-  'auto-route': true,
-  'interface-name': '',
-  mtu: 9000,
-  'strict-route': true,
-  'endpoint-independent-nat': false,
-  'inet4-address': '172.19.0.1/30',
-  'inet6-address': 'fdfe:dcba:9876::1/126'
+export const DefaultInboundSocks = (): NonNullable<App.Inbound['socks']> => ({
+  listen: {
+    listen: '127.0.0.1',
+    listen_port: 20120,
+    tcp_fast_open: false,
+    tcp_multi_path: false,
+    udp_fragment: false,
+  },
+  users: [],
 })
 
-export const DnsConfigDefaults = (): ProfileType['dnsConfig'] => ({
+export const DefaultInboundHttp = (): NonNullable<App.Inbound['http']> => ({
+  listen: {
+    listen: '127.0.0.1',
+    listen_port: 20121,
+    tcp_fast_open: false,
+    tcp_multi_path: false,
+    udp_fragment: false,
+  },
+  users: [],
+})
+
+export const DefaultInboundMixed = (): NonNullable<App.Inbound['mixed']> => ({
+  listen: {
+    listen: '127.0.0.1',
+    listen_port: 20122,
+    tcp_fast_open: false,
+    tcp_multi_path: false,
+    udp_fragment: false,
+  },
+  users: [],
+})
+
+export const DefaultInboundDirect = (): NonNullable<App.Inbound['direct']> => ({
+  listen: {
+    listen: '127.0.0.1',
+    listen_port: 20119,
+    tcp_fast_open: false,
+    tcp_multi_path: false,
+    udp_fragment: false,
+  },
+  network: '',
+})
+
+export const DefaultInboundTun = (): NonNullable<App.Inbound['tun']> => ({
+  interface_name: '',
+  address: ['172.18.0.1/30', 'fdfe:dcba:9876::1/126'],
+  mtu: 0,
+  auto_route: true,
+  strict_route: true,
+  route_address: [],
+  route_exclude_address: [],
+  endpoint_independent_nat: false,
+  stack: TunStack.Mixed,
+})
+
+export const DefaultInbounds = (): App.Inbound[] => [
+  {
+    id: DefaultInboundIds.MixedIn,
+    type: Inbound.Mixed,
+    tag: 'mixed-in',
+    enable: true,
+    mixed: DefaultInboundMixed(),
+  },
+  {
+    id: DefaultInboundIds.Tun,
+    type: Inbound.Tun,
+    tag: 'tun-in',
+    enable: false,
+    tun: DefaultInboundTun(),
+  },
+]
+
+export const DefaultOutbound = (): App.Outbound => ({
+  id: sampleID(),
+  tag: '',
+  type: Outbound.Selector,
+  outbounds: [],
+  interrupt_exist_connections: true,
+  url: DefaultTestURL,
+  interval: '3m',
+  tolerance: 150,
+  include: '',
+  exclude: '',
+  icon: '',
+  hidden: false,
+})
+
+export const DefaultOutbounds = (): App.Outbound[] => [
+  {
+    id: DefaultOutboundIds.Select,
+    tag: t('outbound.select'),
+    type: Outbound.Selector,
+    outbounds: [{ id: DefaultOutboundIds.Urltest, type: 'Built-in', tag: t('outbound.urltest') }],
+    interrupt_exist_connections: true,
+    url: '',
+    interval: '3m',
+    tolerance: 150,
+    include: '',
+    exclude: '',
+    icon: '',
+    hidden: false,
+  },
+  {
+    id: DefaultOutboundIds.Urltest,
+    tag: t('outbound.urltest'),
+    type: Outbound.Urltest,
+    outbounds: [],
+    interrupt_exist_connections: true,
+    url: DefaultTestURL,
+    interval: '3m',
+    tolerance: 150,
+    include: '',
+    exclude: '',
+    icon: '',
+    hidden: false,
+  },
+  {
+    id: DefaultOutboundIds.Direct,
+    tag: t('outbound.direct'),
+    type: Outbound.Selector,
+    outbounds: [
+      { id: 'direct', type: 'Built-in', tag: 'direct' },
+      { id: 'block', type: 'Built-in', tag: 'block' },
+    ],
+    interrupt_exist_connections: true,
+    url: '',
+    interval: '3m',
+    tolerance: 150,
+    include: '',
+    exclude: '',
+    icon: '',
+    hidden: false,
+  },
+  {
+    id: DefaultOutboundIds.Block,
+    tag: t('outbound.block'),
+    type: Outbound.Selector,
+    outbounds: [
+      { id: 'block', type: 'Built-in', tag: 'block' },
+      { id: 'direct', type: 'Built-in', tag: 'direct' },
+    ],
+    interrupt_exist_connections: true,
+    url: '',
+    interval: '3m',
+    tolerance: 150,
+    include: '',
+    exclude: '',
+    icon: '',
+    hidden: false,
+  },
+  {
+    id: DefaultOutboundIds.Fallback,
+    tag: t('outbound.fallback'),
+    type: Outbound.Selector,
+    outbounds: [
+      { id: DefaultOutboundIds.Select, type: 'Built-in', tag: t('outbound.select') },
+      { id: DefaultOutboundIds.Direct, type: 'Built-in', tag: t('outbound.direct') },
+    ],
+    interrupt_exist_connections: true,
+    url: '',
+    interval: '3m',
+    tolerance: 150,
+    include: '',
+    exclude: '',
+    icon: '',
+    hidden: false,
+  },
+  {
+    id: DefaultOutboundIds.Global,
+    tag: 'GLOBAL',
+    type: Outbound.Selector,
+    outbounds: [
+      { id: DefaultOutboundIds.Select, type: 'Built-in', tag: t('outbound.select') },
+      { id: DefaultOutboundIds.Urltest, type: 'Built-in', tag: t('outbound.urltest') },
+      { id: DefaultOutboundIds.Direct, type: 'Built-in', tag: t('outbound.direct') },
+      { id: DefaultOutboundIds.Block, type: 'Built-in', tag: t('outbound.block') },
+      { id: DefaultOutboundIds.Fallback, type: 'Built-in', tag: t('outbound.fallback') },
+    ],
+    interrupt_exist_connections: true,
+    url: '',
+    interval: '3m',
+    tolerance: 150,
+    include: '',
+    exclude: '',
+    icon: '',
+    hidden: false,
+  },
+]
+
+export const DefaultRouteRule = (): App.Rule => ({
+  id: sampleID(),
+  type: RuleType.RuleSet,
   enable: true,
-  fakeip: false,
-  strategy: 'ipv4_only',
-  'local-dns': 'https://223.5.5.5/dns-query',
-  'remote-dns': 'tls://8.8.8.8',
-  'resolver-dns': '223.5.5.5',
-  'remote-resolver-dns': '8.8.8.8',
-  'final-dns': FinalDnsType.Remote,
-  'local-dns-detour': t('outbound.direct'),
-  'remote-dns-detour': t('outbound.select'),
-  'fake-ip-range-v4': '198.18.0.1/16',
-  'fake-ip-range-v6': 'fc00::/18',
-  'fake-ip-filter': [
-    '.lan',
-    '.localdomain',
-    '.example',
-    '.invalid',
-    '.localhost',
-    '.test',
-    '.local',
-    '.home.arpa',
-    '.msftconnecttest.com',
-    '.msftncsi.com'
-  ],
-  'disable-cache': false,
-  'disable-expire': false,
-  'independent-cache': false,
-  'client-subnet': ''
+  payload: '',
+  invert: false,
+  action: RuleAction.Route,
+  outbound: '',
+  sniffer: [],
+  strategy: Strategy.Default,
+  server: '',
 })
 
-export const ProxyGroupsConfigDefaults = (): ProfileType['proxyGroupsConfig'] => {
-  const id1 = sampleID()
-  const id2 = sampleID()
-  const id3 = sampleID()
-  const id4 = sampleID()
-  const id5 = sampleID()
-  const id6 = sampleID()
+export const DefaultRouteRuleset = (): App.ProfileRuleSet => ({
+  id: sampleID(),
+  type: RulesetType.Local,
+  tag: '',
+  format: RulesetFormat.Binary,
+  url: '',
+  http_client: '',
+  update_interval: '',
+  rules: '',
+  path: '',
+})
 
-  return [
+export const DefaultRoute = (): App.Route => ({
+  rules: [
     {
-      id: id1,
-      tag: t('outbound.select'),
-      type: ProxyGroup.Select,
-      proxies: [{ id: id2, type: 'built-in', tag: t('outbound.urltest') }],
-      use: [],
-      url: '',
-      interval: 300,
-      tolerance: 150,
-      filter: ''
+      id: sampleID(),
+      type: RuleType.Inbound,
+      payload: DefaultInboundIds.Tun,
+      enable: true,
+      invert: false,
+      action: RuleAction.Sniff,
+      outbound: '',
+      sniffer: [],
+      strategy: Strategy.Default,
+      server: '',
     },
     {
-      id: id2,
-      tag: t('outbound.urltest'),
-      type: ProxyGroup.UrlTest,
-      proxies: [],
-      use: [],
-      url: 'https://www.gstatic.com/generate_204',
-      interval: 300,
-      tolerance: 150,
-      filter: ''
+      id: sampleID(),
+      type: RuleType.Protocol,
+      enable: true,
+      payload: 'dns',
+      invert: false,
+      action: RuleAction.HijackDNS,
+      outbound: '',
+      sniffer: [],
+      strategy: Strategy.Default,
+      server: '',
     },
     {
-      id: id3,
-      tag: t('outbound.direct'),
-      type: ProxyGroup.Select,
-      proxies: [
-        { id: 'direct', type: 'built-in', tag: 'direct' },
-        { id: 'block', type: 'built-in', tag: 'block' }
-      ],
-      use: [],
-      url: '',
-      interval: 300,
-      tolerance: 150,
-      filter: ''
+      id: sampleID(),
+      type: RuleType.ClashMode,
+      payload: ClashMode.Direct,
+      enable: true,
+      invert: false,
+      action: RuleAction.Route,
+      outbound: DefaultOutboundIds.Direct,
+      sniffer: [],
+      strategy: Strategy.Default,
+      server: '',
     },
     {
-      id: id4,
-      tag: t('outbound.block'),
-      type: ProxyGroup.Select,
-      proxies: [
-        { id: 'block', type: 'built-in', tag: 'block' },
-        { id: 'direct', type: 'built-in', tag: 'direct' }
-      ],
-      use: [],
-      url: '',
-      interval: 300,
-      tolerance: 150,
-      filter: ''
+      id: sampleID(),
+      type: RuleType.ClashMode,
+      enable: true,
+      payload: ClashMode.Global,
+      invert: false,
+      action: RuleAction.Route,
+      outbound: DefaultOutboundIds.Global,
+      sniffer: [],
+      strategy: Strategy.Default,
+      server: '',
     },
     {
-      id: id5,
-      tag: t('outbound.fallback'),
-      type: ProxyGroup.Select,
-      proxies: [
-        { id: id1, type: 'built-in', tag: t('outbound.select') },
-        { id: id3, type: 'built-in', tag: t('outbound.direct') }
-      ],
-      use: [],
-      url: '',
-      interval: 300,
-      tolerance: 150,
-      filter: ''
+      id: RuleType.InsertionPoint,
+      type: RuleType.InsertionPoint,
+      enable: true,
+      payload: '',
+      invert: false,
+      action: RuleAction.Route,
+      outbound: '',
+      sniffer: [],
+      strategy: Strategy.Default,
+      server: '',
     },
     {
-      id: id6,
-      tag: 'GLOBAL',
-      type: ProxyGroup.Select,
-      proxies: [
-        { id: 'direct', type: 'built-in', tag: 'direct' },
-        { id: 'block', type: 'built-in', tag: 'block' },
-        { id: id1, type: 'built-in', tag: t('outbound.select') },
-        { id: id2, type: 'built-in', tag: t('outbound.urltest') },
-        { id: id3, type: 'built-in', tag: t('outbound.direct') },
-        { id: id4, type: 'built-in', tag: t('outbound.block') },
-        { id: id5, type: 'built-in', tag: t('outbound.fallback') }
-      ],
-      use: [],
-      url: '',
-      interval: 300,
-      tolerance: 150,
-      filter: ''
-    }
-  ]
-}
+      id: sampleID(),
+      type: RuleType.Network,
+      enable: true,
+      payload: 'icmp',
+      invert: false,
+      action: RuleAction.Route,
+      outbound: DefaultOutboundIds.Direct,
+      sniffer: [],
+      strategy: Strategy.Default,
+      server: '',
+    },
+    {
+      id: sampleID(),
+      type: RuleType.Protocol,
+      enable: true,
+      payload: 'quic',
+      invert: false,
+      action: RuleAction.Route,
+      outbound: DefaultOutboundIds.Block,
+      sniffer: [],
+      strategy: Strategy.Default,
+      server: '',
+    },
+    {
+      id: sampleID(),
+      type: RuleType.RuleSet,
+      enable: true,
+      payload: DefaultRulesetIds.CATEGORY_ADS,
+      invert: false,
+      action: RuleAction.Route,
+      outbound: DefaultOutboundIds.Block,
+      sniffer: [],
+      strategy: Strategy.Default,
+      server: '',
+    },
+    {
+      id: sampleID(),
+      type: RuleType.RuleSet,
+      enable: true,
+      payload: DefaultRulesetIds.GEOSITE_PRIVATE,
+      invert: false,
+      action: RuleAction.Route,
+      outbound: DefaultOutboundIds.Direct,
+      sniffer: [],
+      strategy: Strategy.Default,
+      server: '',
+    },
+    {
+      id: sampleID(),
+      type: RuleType.RuleSet,
+      enable: true,
+      payload: DefaultRulesetIds.GEOSITE_CN,
+      invert: false,
+      action: RuleAction.Route,
+      outbound: DefaultOutboundIds.Direct,
+      sniffer: [],
+      strategy: Strategy.Default,
+      server: '',
+    },
+    {
+      id: sampleID(),
+      type: RuleType.RuleSet,
+      enable: true,
+      payload: DefaultRulesetIds.GEOIP_PRIVATE,
+      invert: false,
+      action: RuleAction.Route,
+      outbound: DefaultOutboundIds.Direct,
+      sniffer: [],
+      strategy: Strategy.Default,
+      server: '',
+    },
+    {
+      id: sampleID(),
+      type: RuleType.RuleSet,
+      enable: true,
+      payload: DefaultRulesetIds.GEOIP_CN,
+      invert: false,
+      action: RuleAction.Route,
+      outbound: DefaultOutboundIds.Direct,
+      sniffer: [],
+      strategy: Strategy.Default,
+      server: '',
+    },
+    {
+      id: sampleID(),
+      type: RuleType.RuleSet,
+      enable: true,
+      payload: DefaultRulesetIds.GEOLOCATION_NOT_CN,
+      invert: false,
+      action: RuleAction.Route,
+      outbound: DefaultOutboundIds.Select,
+      sniffer: [],
+      strategy: Strategy.Default,
+      server: '',
+    },
+  ],
+  rule_set: [
+    {
+      id: DefaultRulesetIds.CATEGORY_ADS,
+      type: RulesetType.Remote,
+      tag: DefaultRulesetIds.CATEGORY_ADS,
+      format: RulesetFormat.Binary,
+      url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/category-ads-all.srs',
+      http_client: '',
+      update_interval: '',
+      rules: '',
+      path: '',
+    },
+    {
+      id: DefaultRulesetIds.GEOIP_PRIVATE,
+      type: RulesetType.Remote,
+      tag: DefaultRulesetIds.GEOIP_PRIVATE,
+      format: RulesetFormat.Binary,
+      url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/private.srs',
+      http_client: '',
+      update_interval: '',
+      rules: '',
+      path: '',
+    },
+    {
+      id: DefaultRulesetIds.GEOSITE_PRIVATE,
+      type: RulesetType.Remote,
+      tag: DefaultRulesetIds.GEOSITE_PRIVATE,
+      format: RulesetFormat.Binary,
+      url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/private.srs',
+      http_client: '',
+      update_interval: '',
+      rules: '',
+      path: '',
+    },
+    {
+      id: DefaultRulesetIds.GEOIP_CN,
+      type: RulesetType.Remote,
+      tag: DefaultRulesetIds.GEOIP_CN,
+      format: RulesetFormat.Binary,
+      url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/cn.srs',
+      http_client: '',
+      update_interval: '',
+      rules: '',
+      path: '',
+    },
+    {
+      id: DefaultRulesetIds.GEOSITE_CN,
+      type: RulesetType.Remote,
+      tag: DefaultRulesetIds.GEOSITE_CN,
+      format: RulesetFormat.Binary,
+      url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/cn.srs',
+      http_client: '',
+      update_interval: '',
+      rules: '',
+      path: '',
+    },
+    {
+      id: DefaultRulesetIds.GEOLOCATION_NOT_CN,
+      type: RulesetType.Remote,
+      tag: DefaultRulesetIds.GEOLOCATION_NOT_CN,
+      format: RulesetFormat.Binary,
+      url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-!cn.srs',
+      http_client: '',
+      update_interval: '',
+      rules: '',
+      path: '',
+    },
+  ],
+  auto_detect_interface: true,
+  default_interface: '',
+  final: DefaultOutboundIds.Fallback,
+  find_process: false,
+  default_http_client: DefaultOutboundIds.Select,
+  default_domain_resolver: {
+    server: DefaultDnsServersIds.LocalDns,
+    client_subnet: '',
+  },
+})
 
-export const RulesConfigDefaults = (): ProfileType['rulesConfig'] => [
+export const DefaultDnsServer = (): App.DnsServerConfig => ({
+  id: sampleID(),
+  tag: '',
+  type: DnsServer.Local,
+  detour: '',
+  domain_resolver: '',
+  server: '',
+  server_port: '',
+  path: '',
+  interface: '',
+  inet4_range: '',
+  inet6_range: '',
+  hosts_path: [],
+  predefined: {},
+})
+
+export const DefaultDnsServers = (): App.DnsServerConfig[] => [
   {
-    id: sampleID(),
-    type: 'inline',
-    payload: JSON.stringify({ protocol: 'dns', port: 53 }, null, 2),
-    proxy: 'dns-out',
-    'ruleset-name': '',
-    'ruleset-format': '',
-    'download-detour': '',
-    invert: false
+    id: DefaultDnsServersIds.FakeIP,
+    tag: DefaultDnsServersIds.FakeIP,
+    detour: '',
+    type: DnsServer.FakeIP,
+    domain_resolver: '',
+    server: '',
+    server_port: '',
+    path: '',
+    interface: '',
+    inet4_range: '198.18.0.0/15',
+    inet6_range: 'fc00::/18',
+    hosts_path: [],
+    predefined: {},
   },
   {
-    id: sampleID(),
-    type: 'clash_mode',
-    payload: 'direct',
-    proxy: 'direct',
-    'ruleset-name': '',
-    'ruleset-format': '',
-    'download-detour': '',
-    invert: false
+    id: DefaultDnsServersIds.LocalDns,
+    tag: DefaultDnsServersIds.LocalDns,
+    detour: '',
+    type: DnsServer.Https,
+    domain_resolver: DefaultDnsServersIds.LocalDnsResolver,
+    server: '223.5.5.5',
+    server_port: '443',
+    path: '/dns-query',
+    interface: '',
+    inet4_range: '',
+    inet6_range: '',
+    hosts_path: [],
+    predefined: {},
   },
   {
-    id: sampleID(),
-    type: 'clash_mode',
-    payload: 'global',
-    proxy: 'GLOBAL',
-    'ruleset-name': '',
-    'ruleset-format': '',
-    'download-detour': '',
-    invert: false
+    id: DefaultDnsServersIds.LocalDnsResolver,
+    tag: DefaultDnsServersIds.LocalDnsResolver,
+    detour: '',
+    type: DnsServer.Udp,
+    domain_resolver: '',
+    server: '223.5.5.5',
+    server_port: '53',
+    path: '',
+    interface: '',
+    inet4_range: '',
+    inet6_range: '',
+    hosts_path: [],
+    predefined: {},
   },
   {
-    id: sampleID(),
-    type: 'inline',
-    payload: JSON.stringify({ network: 'udp', port: 443 }, null, 2),
-    proxy: t('outbound.block'),
-    'ruleset-name': '',
-    'ruleset-format': '',
-    'download-detour': '',
-    invert: false
+    id: DefaultDnsServersIds.RemoteDns,
+    tag: DefaultDnsServersIds.RemoteDns,
+    detour: DefaultOutboundIds.Select,
+    type: DnsServer.Tls,
+    domain_resolver: DefaultDnsServersIds.RemoteDnsResolver,
+    server: '8.8.8.8',
+    server_port: '853',
+    path: '',
+    interface: '',
+    inet4_range: '',
+    inet6_range: '',
+    hosts_path: [],
+    predefined: {},
   },
   {
-    id: sampleID(),
-    type: 'rule_set_url',
-    payload:
-      'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/category-ads-all.srs',
-    proxy: t('outbound.block'),
-    'ruleset-name': 'CATEGORY-ADS',
-    'ruleset-format': 'binary',
-    'download-detour': t('outbound.direct'),
-    invert: false
+    id: DefaultDnsServersIds.RemoteDnsResolver,
+    tag: DefaultDnsServersIds.RemoteDnsResolver,
+    detour: DefaultOutboundIds.Select,
+    type: DnsServer.Udp,
+    domain_resolver: '',
+    server: '8.8.8.8',
+    server_port: '53',
+    path: '',
+    interface: '',
+    inet4_range: '',
+    inet6_range: '',
+    hosts_path: [],
+    predefined: {},
   },
-  {
-    id: sampleID(),
-    type: 'ip_is_private',
-    payload: '',
-    proxy: t('outbound.direct'),
-    'ruleset-name': '',
-    'ruleset-format': '',
-    'download-detour': '',
-    invert: false
-  },
-  {
-    id: sampleID(),
-    type: 'rule_set_url',
-    payload: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/cn.srs',
-    proxy: t('outbound.direct'),
-    'ruleset-name': 'GEOIP-CN',
-    'ruleset-format': 'binary',
-    'download-detour': t('outbound.direct'),
-    invert: false
-  },
-  {
-    id: sampleID(),
-    type: 'rule_set_url',
-    payload: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/cn.srs',
-    proxy: t('outbound.direct'),
-    'ruleset-name': 'GEOSITE-CN',
-    'ruleset-format': 'binary',
-    'download-detour': t('outbound.direct'),
-    invert: false
-  },
-  {
-    id: sampleID(),
-    type: 'rule_set_url',
-    payload:
-      'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-!cn.srs',
-    proxy: t('outbound.select'),
-    'ruleset-name': 'GEOLOCATION-!CN',
-    'ruleset-format': 'binary',
-    'download-detour': t('outbound.direct'),
-    invert: false
-  },
-  {
-    id: sampleID(),
-    type: 'final',
-    payload: '',
-    proxy: t('outbound.fallback'),
-    'ruleset-name': '',
-    'ruleset-format': '',
-    'download-detour': '',
-    invert: false
-  }
 ]
 
-export const DnsRulesConfigDefaults = (): ProfileType['dnsRulesConfig'] => [
+export const DefaultFakeIPDnsRule = () => ({
+  __is_fake_ip: true,
+  type: 'logical',
+  mode: 'and',
+  rules: [
+    {
+      domain_suffix: [
+        '.lan',
+        '.localdomain',
+        '.example',
+        '.invalid',
+        '.localhost',
+        '.test',
+        '.local',
+        '.home.arpa',
+        '.msftconnecttest.com',
+        '.msftncsi.com',
+      ],
+      invert: true,
+    },
+    {
+      query_type: ['A', 'AAAA'],
+    },
+  ],
+})
+
+export const DefaultDnsRule = (): App.DnsRule => ({
+  id: sampleID(),
+  type: RuleType.RuleSet,
+  enable: true,
+  payload: '',
+  action: RuleAction.Route,
+  invert: false,
+  match_response: '',
+  // route/evaluate
+  server: '',
+  // evaluate
+  tag: '',
+  // route/route-options
+  disable_cache: false,
+  client_subnet: '',
+})
+
+export const DefaultDnsRules = (): App.DnsRule[] => [
   {
     id: sampleID(),
-    type: 'outbound',
-    payload: 'any',
-    server: 'local-dns',
+    type: RuleType.ClashMode,
+    enable: true,
+    payload: ClashMode.Direct,
+    action: RuleAction.Route,
+    server: DefaultDnsServersIds.LocalDns,
     invert: false,
-    'disable-cache': true,
-    'ruleset-name': '',
-    'ruleset-format': '',
-    'download-detour': '',
-    'client-subnet': ''
+    match_response: '',
+    tag: '',
+    disable_cache: false,
+    client_subnet: '',
   },
   {
     id: sampleID(),
-    type: 'fakeip',
+    type: RuleType.ClashMode,
+    enable: true,
+    payload: ClashMode.Global,
+    action: RuleAction.Route,
+    server: DefaultDnsServersIds.RemoteDns,
+    invert: false,
+    match_response: '',
+    tag: '',
+    disable_cache: false,
+    client_subnet: '',
+  },
+  {
+    id: RuleType.InsertionPoint,
+    type: RuleType.InsertionPoint,
+    enable: true,
     payload: '',
-    server: 'fakeip-dns',
+    action: RuleAction.Route,
+    server: '',
     invert: false,
-    'disable-cache': false,
-    'ruleset-name': '',
-    'ruleset-format': '',
-    'download-detour': '',
-    'client-subnet': ''
+    match_response: '',
+    tag: '',
+    disable_cache: false,
+    client_subnet: '',
   },
   {
     id: sampleID(),
-    type: 'clash_mode',
-    payload: 'direct',
-    server: 'local-dns',
+    type: RuleType.RuleSet,
+    enable: true,
+    payload: DefaultRulesetIds.GEOSITE_CN,
+    action: RuleAction.Route,
+    server: DefaultDnsServersIds.LocalDns,
     invert: false,
-    'disable-cache': false,
-    'ruleset-name': '',
-    'ruleset-format': '',
-    'download-detour': '',
-    'client-subnet': ''
+    match_response: '',
+    tag: '',
+    disable_cache: false,
+    client_subnet: '',
   },
   {
     id: sampleID(),
-    type: 'clash_mode',
-    payload: 'global',
-    server: 'remote-dns',
+    type: RuleType.Inline,
+    enable: false,
+    payload: JSON.stringify(DefaultFakeIPDnsRule(), null, 2),
+    action: RuleAction.Route,
+    server: DefaultDnsServersIds.FakeIP,
     invert: false,
-    'disable-cache': false,
-    'ruleset-name': '',
-    'ruleset-format': '',
-    'download-detour': '',
-    'client-subnet': ''
+    match_response: '',
+    tag: '',
+    disable_cache: false,
+    client_subnet: '',
   },
   {
     id: sampleID(),
-    type: 'rule_set_url',
-    payload: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/cn.srs',
-    server: 'local-dns',
-    'disable-cache': false,
+    type: RuleType.RuleSet,
+    enable: true,
+    payload: DefaultRulesetIds.GEOLOCATION_NOT_CN,
+    action: RuleAction.Route,
+    server: DefaultDnsServersIds.RemoteDns,
     invert: false,
-    'ruleset-name': 'GEOSITE-CN',
-    'ruleset-format': 'binary',
-    'download-detour': t('outbound.direct'),
-    'client-subnet': ''
+    match_response: '',
+    tag: '',
+    disable_cache: false,
+    client_subnet: '',
   },
-  {
-    id: sampleID(),
-    type: 'rule_set_url',
-    payload:
-      'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-!cn.srs',
-    server: 'remote-dns',
-    'disable-cache': false,
-    invert: false,
-    'ruleset-name': 'GEOLOCATION-!CN',
-    'ruleset-format': 'binary',
-    'download-detour': t('outbound.direct'),
-    'client-subnet': ''
-  }
 ]
 
-export const MixinConfigDefaults = (): ProfileType['mixinConfig'] => {
-  return { priority: 'mixin', config: '{}' }
+export const DefaultDns = (): App.Dns => ({
+  servers: DefaultDnsServers(),
+  rules: DefaultDnsRules(),
+  disable_cache: false,
+  disable_expire: false,
+  client_subnet: '',
+  optimistic: {
+    enabled: false,
+    timeout: '3d',
+  },
+  final: DefaultDnsServersIds.RemoteDns,
+  strategy: Strategy.Default,
+})
+
+export const DefaultMixin = (): App.Profile['mixin'] => {
+  return { priority: 'mixin', format: 'json', config: '' }
 }
 
-export const ScriptConfigDefaults = (): ProfileType['scriptConfig'] => {
+export const DefaultScript = (): App.Profile['script'] => {
   return { code: `const onGenerate = async (config) => {\n  return config\n}` }
 }

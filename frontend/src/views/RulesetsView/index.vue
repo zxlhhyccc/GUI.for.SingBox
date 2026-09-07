@@ -1,78 +1,79 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { useI18n, I18nT } from 'vue-i18n'
 
-import { useMessage } from '@/hooks'
-import { Removefile, Writefile, BrowserOpenURL } from '@/bridge'
-import { debounce, formatRelativeTime, ignoredError, formatDate } from '@/utils'
-import { getProvidersRules, updateProvidersRules } from '@/api/kernel'
-import { DraggableOptions, View, EmptyRuleSet, RulesetFormat } from '@/constant'
+import { RemoveFile, WriteFile, OpenURI } from '@/bridge'
+import { DraggableOptions, ViewOptions } from '@/constant/app'
+import { BuiltInOutbound, EmptyRuleSet } from '@/constant/kernel'
+import { DefaultRouteRule, DefaultRouteRuleset } from '@/constant/profile'
+import { View } from '@/enums/app'
+import { RulesetFormat, RulesetType, RuleType } from '@/enums/kernel'
+import { useRulesetsStore, useAppSettingsStore, useEnvStore, useProfilesStore } from '@/stores'
 import {
-  type RuleSetType,
-  type Menu,
-  useRulesetsStore,
-  useAppSettingsStore,
-  useEnvStore
-} from '@/stores'
+  debounce,
+  formatRelativeTime,
+  ignoredError,
+  formatDate,
+  message,
+  picker,
+  deepClone,
+  modal,
+} from '@/utils'
 
 import RulesetForm from './components/RulesetForm.vue'
-import RulesetView from './components/RulesetView.vue'
 import RulesetHub from './components/RulesetHub.vue'
+import RulesetView from './components/RulesetView.vue'
 
-const showRulesetForm = ref(false)
-const showRulesetList = ref(false)
-const showRulesetHub = ref(false)
-const rulesetTitle = ref('')
-const rulesetFormID = ref()
-const rulesetFormIsUpdate = ref(false)
-const subFormTitle = computed(() => (rulesetFormIsUpdate.value ? 'common.edit' : 'common.add'))
-
-const sourceMenuList: Menu[] = [
+const sourceMenuList: App.Menu[] = [
   {
     label: 'rulesets.editRuleset',
-    handler: (id: string) => handleEditRulesetList(id)
+    handler: (id: string) => handleEditRulesetList(id),
   },
   {
     label: 'common.openFile',
-    handler: (id: string) => {
+    handler: async (id: string) => {
       const ruleset = rulesetsStore.getRulesetById(id)
-      BrowserOpenURL(envStore.env.basePath + '/' + ruleset!.path)
-    }
+      await OpenURI(envStore.env.basePath + '/' + ruleset!.path)
+    },
   },
   {
     label: 'common.clear',
-    handler: (id: string) => handleClearRuleset(id)
-  }
-]
-
-const binaryMenuList: Menu[] = [
-  {
-    label: 'common.none',
-    handler: (id: string) => {
-      message.info('common.none')
-    }
-  }
+    handler: (id: string) => handleClearRuleset(id),
+  },
 ]
 
 const { t } = useI18n()
-const { message } = useMessage()
 const envStore = useEnvStore()
 const rulesetsStore = useRulesetsStore()
 const appSettingsStore = useAppSettingsStore()
+const profilesStore = useProfilesStore()
 
 const handleImportRuleset = async () => {
-  showRulesetHub.value = true
+  const m = modal({
+    title: 'rulesets.hub',
+    cancelText: 'common.close',
+    height: '90',
+    width: '90',
+    px: 0,
+    py: 0,
+    submit: false,
+    maskClosable: true,
+  })
+  m.setContent(RulesetHub).open()
 }
 
-const handleAddRuleset = async () => {
-  rulesetFormIsUpdate.value = false
-  showRulesetForm.value = true
+const handleShowRulesetForm = async (id?: string, isUpdate = false) => {
+  const m = modal({
+    title: isUpdate ? 'common.edit' : 'common.add',
+    maxHeight: '90',
+    minWidth: '70',
+  })
+  m.setContent(RulesetForm, { id, isUpdate }).open()
 }
 
 const handleUpdateRulesets = async () => {
   try {
     await rulesetsStore.updateRulesets()
-    await _updateAllProvidersRules()
     message.success('common.success')
   } catch (error: any) {
     console.error('updateRulesets: ', error)
@@ -80,34 +81,27 @@ const handleUpdateRulesets = async () => {
   }
 }
 
-const handleEditRuleset = (r: RuleSetType) => {
-  rulesetFormIsUpdate.value = true
-  rulesetFormID.value = r.id
-  showRulesetForm.value = true
-}
-
 const handleEditRulesetList = (id: string) => {
-  const r = rulesetsStore.getRulesetById(id)
-  if (r) {
-    rulesetFormID.value = r.id
-    rulesetTitle.value = r.tag
-    showRulesetList.value = true
-  }
+  const m = modal({
+    title: rulesetsStore.getRulesetById(id)?.name,
+    height: '90',
+    width: '90',
+  })
+  m.setContent(RulesetView, { id }).open()
 }
 
-const handleUpdateRuleset = async (r: RuleSetType) => {
+const handleUpdateRuleset = async (r: App.RuleSet) => {
   try {
     await rulesetsStore.updateRuleset(r.id)
-    await _updateProvidersRules(r.tag)
   } catch (error: any) {
     console.error('updateRuleset: ', error)
     message.error(error)
   }
 }
 
-const handleDeleteRuleset = async (r: RuleSetType) => {
+const handleDeleteRuleset = async (r: App.RuleSet) => {
   try {
-    await ignoredError(Removefile, r.path)
+    await ignoredError(RemoveFile, r.path)
     await rulesetsStore.deleteRuleset(r.id)
   } catch (error: any) {
     console.error('deleteRuleset: ', error)
@@ -115,7 +109,7 @@ const handleDeleteRuleset = async (r: RuleSetType) => {
   }
 }
 
-const handleDisableRuleset = async (r: RuleSetType) => {
+const handleDisableRuleset = async (r: App.RuleSet) => {
   r.disabled = !r.disabled
   rulesetsStore.editRuleset(r.id, r)
 }
@@ -126,8 +120,7 @@ const handleClearRuleset = async (id: string) => {
   if (r.format != RulesetFormat.Source) return
 
   try {
-    await Writefile(r.path, JSON.stringify(EmptyRuleSet, null, 2))
-    await _updateProvidersRules(r.tag)
+    await WriteFile(r.path, JSON.stringify(EmptyRuleSet, null, 2))
     rulesetsStore.editRuleset(r.id, r)
   } catch (error: any) {
     message.error(error)
@@ -135,38 +128,87 @@ const handleClearRuleset = async (id: string) => {
   }
 }
 
-const onEditRuelsetListEnd = async () => {
+const handleAddRulesetToProfile = async (id: string) => {
+  const ruleset = rulesetsStore.getRulesetById(id)
+  if (!ruleset) return
+
   try {
-    await _updateProvidersRules(rulesetTitle.value)
-  } catch (error: any) {
+    const { items } = await picker.resource('profile', 'profiles.select', { max: 1, min: 1 })
+    const profile = items[0]
+    if (!profile) return
+
+    const insertionPointIndex = profile.route.rules.findIndex(
+      (rule) => rule.type === RuleType.InsertionPoint,
+    )
+
+    if (insertionPointIndex === -1) {
+      message.warn('kernel.missingInsertionPoint')
+      return
+    }
+
+    const profileRuleset = profile.route.rule_set.find(
+      (item) => item.type === RulesetType.Local && item.path === ruleset.id,
+    )
+    if (
+      profileRuleset &&
+      profile.route.rules.some(
+        (rule) =>
+          rule.type === RuleType.RuleSet && rule.payload.split(',').includes(profileRuleset.id),
+      )
+    ) {
+      message.info('common.added')
+      return
+    }
+
+    const outboundOptions = [
+      ...BuiltInOutbound.map((outbound) => ({ label: outbound, value: outbound })),
+      ...profile.outbounds.map((outbound) => ({
+        label: outbound.tag,
+        value: outbound.id,
+        description: outbound.type,
+      })),
+    ]
+    const target = await picker.single('kernel.route.rules.outbound', outboundOptions, [
+      profile.outbounds[0]?.id || BuiltInOutbound[0]!,
+    ])
+
+    if (!target) return
+
+    const nextProfile = deepClone(profile)
+    let rulesetReferenceId = profileRuleset?.id
+    if (!rulesetReferenceId) {
+      const rulesetReference = {
+        ...DefaultRouteRuleset(),
+        tag: ruleset.name,
+        format: ruleset.format,
+        path: ruleset.id,
+      }
+      nextProfile.route.rule_set.unshift(rulesetReference)
+      rulesetReferenceId = rulesetReference.id
+    }
+
+    nextProfile.route.rules.splice(insertionPointIndex + 1, 0, {
+      ...DefaultRouteRule(),
+      payload: rulesetReferenceId,
+      outbound: target,
+    })
+
+    await profilesStore.editProfile(nextProfile.id, nextProfile)
+    message.success('common.success')
+  } catch (error) {
     message.error(error)
-    console.error(error)
   }
 }
 
-const _updateProvidersRules = async (ruleset: string) => {
-  if (appSettingsStore.app.kernel.running) {
-    const { providers } = await getProvidersRules()
-    if (providers[ruleset]) {
-      await updateProvidersRules(ruleset)
-    }
+const generateMenus = (r: App.RuleSet) => {
+  const addToProfileMenu: App.Menu = {
+    label: 'rulesets.addToProfile',
+    handler: (id: string) => handleAddRulesetToProfile(id),
   }
-}
 
-const _updateAllProvidersRules = async () => {
-  if (appSettingsStore.app.kernel.running) {
-    const { providers } = await getProvidersRules()
-    const rulesets = Object.keys(providers)
-    for (let i = 0; i < rulesets.length; i++) {
-      await updateProvidersRules(rulesets[i])
-    }
-  }
-}
-
-const generateMenus = (r: RuleSetType) => {
   return {
-    [RulesetFormat.Source]: sourceMenuList,
-    [RulesetFormat.Binary]: binaryMenuList
+    [RulesetFormat.Source]: [addToProfileMenu, ...sourceMenuList],
+    [RulesetFormat.Binary]: [addToProfileMenu],
   }[r.format].map((v) => ({ ...v, handler: () => v.handler?.(r.id) }))
 }
 
@@ -179,12 +221,12 @@ const onSortUpdate = debounce(rulesetsStore.saveRulesets, 1000)
   <div v-if="rulesetsStore.rulesets.length === 0" class="grid-list-empty">
     <Empty>
       <template #description>
-        <I18nT keypath="rulesets.empty" tag="p" scope="global">
+        <I18nT keypath="rulesets.empty" tag="div" scope="global" class="flex items-center mt-12">
           <template #action>
-            <Button @click="handleAddRuleset" type="link">{{ t('common.add') }}</Button>
+            <Button type="link" @click="handleShowRulesetForm()">{{ t('common.add') }}</Button>
           </template>
           <template #import>
-            <Button @click="handleImportRuleset" type="link">{{ t('rulesets.hub') }}</Button>
+            <Button type="link" @click="handleImportRuleset">{{ t('rulesets.hub') }}</Button>
           </template>
         </I18nT>
       </template>
@@ -192,24 +234,18 @@ const onSortUpdate = debounce(rulesetsStore.saveRulesets, 1000)
   </div>
 
   <div v-else class="grid-list-header">
-    <Radio
-      v-model="appSettingsStore.app.rulesetsView"
-      :options="[
-        { label: 'common.grid', value: View.Grid },
-        { label: 'common.list', value: View.List }
-      ]"
-    />
-    <Button @click="handleImportRuleset" type="link" class="ml-auto">
+    <Radio v-model="appSettingsStore.app.rulesetsView" :options="ViewOptions" class="mr-auto" />
+    <Button type="link" @click="handleImportRuleset">
       {{ t('rulesets.hub') }}
     </Button>
     <Button
-      @click="handleUpdateRulesets"
       :disabled="noUpdateNeeded"
       :type="noUpdateNeeded ? 'text' : 'link'"
+      @click="handleUpdateRulesets"
     >
       {{ t('common.updateAll') }}
     </Button>
-    <Button @click="handleAddRuleset" type="primary">
+    <Button type="primary" icon="add" class="ml-16" @click="handleShowRulesetForm()">
       {{ t('common.add') }}
     </Button>
   </div>
@@ -221,39 +257,40 @@ const onSortUpdate = debounce(rulesetsStore.saveRulesets, 1000)
     <Card
       v-for="r in rulesetsStore.rulesets"
       :key="r.id"
-      :title="r.tag"
-      :disabled="r.disabled"
       v-menu="generateMenus(r)"
-      class="item"
+      :title="r.name"
+      :disabled="r.disabled"
+      class="grid-list-item"
     >
       <template #title-prefix>
-        <Tag v-if="r.updating" color="cyan">
+        <Tag v-if="r.updating" color="cyan" size="small">
           {{ t('ruleset.updating') }}
         </Tag>
       </template>
 
       <template v-if="appSettingsStore.app.rulesetsView === View.Grid" #extra>
-        <Dropdown :trigger="['hover', 'click']">
+        <Dropdown>
           <Button type="link" size="small" icon="more" />
           <template #overlay>
-            <Button
-              :disabled="r.disabled"
-              :loading="r.updating"
-              :type="r.disabled ? 'text' : 'link'"
-              size="small"
-              @click="handleUpdateRuleset(r)"
-            >
-              {{ t('common.update') }}
-            </Button>
-            <Button type="link" size="small" @click="handleDisableRuleset(r)">
-              {{ r.disabled ? t('common.enable') : t('common.disable') }}
-            </Button>
-            <Button type="link" size="small" @click="handleEditRuleset(r)">
-              {{ t('common.edit') }}
-            </Button>
-            <Button type="link" size="small" @click="handleDeleteRuleset(r)">
-              {{ t('common.delete') }}
-            </Button>
+            <div class="flex flex-col gap-4 min-w-64 p-4">
+              <Button
+                :disabled="r.disabled"
+                :loading="r.updating"
+                :type="r.disabled ? 'text' : 'text'"
+                @click="handleUpdateRuleset(r)"
+              >
+                {{ t('common.update') }}
+              </Button>
+              <Button type="text" @click="handleDisableRuleset(r)">
+                {{ r.disabled ? t('common.enable') : t('common.disable') }}
+              </Button>
+              <Button type="text" @click="handleShowRulesetForm(r.id, true)">
+                {{ t('common.edit') }}
+              </Button>
+              <Button type="text" @click="handleDeleteRuleset(r)">
+                {{ t('common.delete') }}
+              </Button>
+            </div>
           </template>
         </Dropdown>
       </template>
@@ -262,19 +299,19 @@ const onSortUpdate = debounce(rulesetsStore.saveRulesets, 1000)
         <Button
           :disabled="r.disabled"
           :loading="r.updating"
-          :type="r.disabled ? 'text' : 'link'"
+          :type="r.disabled ? 'text' : 'text'"
           size="small"
           @click="handleUpdateRuleset(r)"
         >
           {{ t('common.update') }}
         </Button>
-        <Button type="link" size="small" @click="handleDisableRuleset(r)">
+        <Button type="text" size="small" @click="handleDisableRuleset(r)">
           {{ r.disabled ? t('common.enable') : t('common.disable') }}
         </Button>
-        <Button type="link" size="small" @click="handleEditRuleset(r)">
+        <Button type="text" size="small" @click="handleShowRulesetForm(r.id, true)">
           {{ t('common.edit') }}
         </Button>
-        <Button type="link" size="small" @click="handleDeleteRuleset(r)">
+        <Button type="text" size="small" @click="handleDeleteRuleset(r)">
           {{ t('common.delete') }}
         </Button>
       </template>
@@ -311,39 +348,4 @@ const onSortUpdate = debounce(rulesetsStore.saveRulesets, 1000)
       </template>
     </Card>
   </div>
-
-  <Modal
-    v-model:open="showRulesetForm"
-    :title="subFormTitle"
-    max-height="90"
-    min-width="70"
-    :footer="false"
-  >
-    <RulesetForm :is-update="rulesetFormIsUpdate" :id="rulesetFormID" />
-  </Modal>
-
-  <Modal
-    v-model:open="showRulesetHub"
-    title="rulesets.hub"
-    :submit="false"
-    mask-closable
-    cancel-text="common.close"
-    height="90"
-    width="90"
-  >
-    <RulesetHub />
-  </Modal>
-
-  <Modal
-    v-model:open="showRulesetList"
-    :title="rulesetTitle"
-    :footer="false"
-    @ok="onEditRuelsetListEnd"
-    height="90"
-    width="90"
-  >
-    <RulesetView :id="rulesetFormID" />
-  </Modal>
 </template>
-
-<style lang="less" scoped></style>

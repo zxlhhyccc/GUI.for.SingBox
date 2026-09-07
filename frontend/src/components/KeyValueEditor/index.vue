@@ -2,64 +2,77 @@
 import { ref, watch } from 'vue'
 
 interface Props {
+  modelValue?: Recordable
   placeholder?: [string, string]
 }
 
-const model = defineModel<Record<string, string>>({ default: {} })
-
-withDefaults(defineProps<Props>(), {
-  placeholder: () => ['key', 'value']
+const props = withDefaults(defineProps<Props>(), {
+  modelValue: () => ({}),
+  placeholder: () => ['key', 'value'],
 })
 
-const keys = ref(Object.keys(model.value))
-const values = ref(Object.values(model.value))
+const emit = defineEmits(['change', 'update:modelValue'])
+
+const entries = ref(Object.entries(props.modelValue))
 
 const handleDel = (i: number) => {
-  keys.value.splice(i, 1)
-  values.value.splice(i, 1)
+  entries.value.splice(i, 1)
+  emitUpdate()
 }
 
 const handleAdd = () => {
-  keys.value.push('')
-  values.value.push('')
+  entries.value.push(['', ''])
+  emitUpdate()
 }
 
+let internalUpdate = false
+
 watch(
-  [keys, values],
-  ([keys, values]) => {
-    const obj = keys.reduce(
-      (obj, key, index) => {
-        obj[key] = values[index]
-        return obj
-      },
-      {} as Record<string, string>
-    )
-    model.value = obj
+  () => props.modelValue,
+  (val) => {
+    if (!internalUpdate) {
+      entries.value = Object.entries(val)
+    }
+    internalUpdate = false
   },
-  { deep: true }
+  { deep: true },
 )
+
+const emitUpdate = () => {
+  const obj = Object.fromEntries(entries.value)
+  if (!internalUpdate) {
+    emit('update:modelValue', obj)
+  }
+  emit('change', obj)
+  internalUpdate = true
+}
 </script>
 
 <template>
-  <div class="kv-editor">
-    <div v-for="(key, i) in keys" :key="i" class="item">
-      <Input v-model="keys[i]" :placeholder="placeholder[0]" />
-      <Button @click="handleDel(i)" type="text" size="small" :icon-size="12" icon="close" />
-      <Input v-model="values[i]" :placeholder="placeholder[1]" />
+  <div class="gui-kv-editor inline-flex flex-col">
+    <div v-for="(entry, i) in entries" :key="i" class="flex items-center mb-4">
+      <Input
+        v-model="entry[0]"
+        :placeholder="placeholder[0]"
+        auto-size
+        class="flex-1"
+        @submit="emitUpdate"
+      />
+      <Button type="text" :icon-size="12" icon="close" @click="handleDel(i)" />
+      <Input
+        v-model="entry[1]"
+        :placeholder="placeholder[1]"
+        auto-size
+        class="flex-1"
+        @submit="emitUpdate"
+      />
     </div>
-    <Button @click="handleAdd" type="primary" icon="add" />
+    <Button type="primary" icon="add" @click="handleAdd" />
   </div>
 </template>
 
 <style lang="less" scoped>
-.kv-editor {
-  display: inline-flex;
-  flex-direction: column;
-  min-width: 219px;
-  .item {
-    display: flex;
-    align-items: center;
-    margin: 0 2px 4px 2px;
-  }
+.gui-kv-editor {
+  min-width: 400px;
 }
 </style>

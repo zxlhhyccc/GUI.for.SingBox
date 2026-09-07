@@ -1,44 +1,49 @@
-import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import { stringify, parse } from 'yaml'
+import { ref } from 'vue'
+import { parse } from 'yaml'
 
-import { debounce, ignoredError, isValidRulesJson, omitArray } from '@/utils'
-import { RulesetsFilePath, RulesetFormat, EmptyRuleSet } from '@/constant'
-import { Readfile, Writefile, Copyfile, Download, FileExists, HttpGet } from '@/bridge'
-
-export type RuleSetType = {
-  id: string
-  tag: string
-  updateTime: number
-  disabled: boolean
-  type: 'Http' | 'File' | 'Manual'
-  format: RulesetFormat
-  path: string
-  url: string
-  count: number
-  // Not Config
-  updating?: boolean
-}
+import { ReadFile, WriteFile, CopyFile, Download, HttpGet } from '@/bridge'
+import { RulesetHubFilePath, RulesetsFilePath } from '@/constant/app'
+import { EmptyRuleSet } from '@/constant/kernel'
+import { RulesetFormat } from '@/enums/kernel'
+import {
+  asyncPool,
+  stringifyNoFolding,
+  eventBus,
+  ignoredError,
+  isValidRulesJson,
+  migrateRulesets,
+  omitArray,
+} from '@/utils'
 
 export const useRulesetsStore = defineStore('rulesets', () => {
-  const rulesets = ref<RuleSetType[]>([])
+  const rulesets = ref<App.RuleSet[]>([])
+  const rulesetHub = ref<App.RulesetHub>({ geosite: '', geoip: '', list: [] })
 
   const setupRulesets = async () => {
-    const data = await ignoredError(Readfile, RulesetsFilePath)
+    const data = await ignoredError(ReadFile, RulesetsFilePath)
     data && (rulesets.value = parse(data))
+
+    await migrateRulesets(rulesets.value, saveRulesets)
+
+    const list = await ignoredError(ReadFile, RulesetHubFilePath)
+    list && (rulesetHub.value = JSON.parse(list))
   }
 
-  const saveRulesets = debounce(async () => {
+  const saveRulesets = () => {
     const r = omitArray(rulesets.value, ['updating'])
-    await Writefile(RulesetsFilePath, stringify(r))
-  }, 500)
+    return WriteFile(RulesetsFilePath, stringifyNoFolding(r))
+  }
 
-  const addRuleset = async (r: RuleSetType) => {
+  const addRuleset = async (r: App.RuleSet) => {
     rulesets.value.push(r)
     try {
       await saveRulesets()
     } catch (error) {
-      rulesets.value.pop()
+      const idx = rulesets.value.indexOf(r)
+      if (idx !== -1) {
+        rulesets.value.splice(idx, 1)
+      }
       throw error
     }
   }
@@ -46,35 +51,38 @@ export const useRulesetsStore = defineStore('rulesets', () => {
   const deleteRuleset = async (id: string) => {
     const idx = rulesets.value.findIndex((v) => v.id === id)
     if (idx === -1) return
-    const backup = rulesets.value.splice(idx, 1)[0]
+    const backup = rulesets.value.splice(idx, 1)[0]!
     try {
       await saveRulesets()
     } catch (error) {
       rulesets.value.splice(idx, 0, backup)
       throw error
     }
+
+    eventBus.emit('rulesetChange', { id })
   }
 
-  const editRuleset = async (id: string, r: RuleSetType) => {
+  const editRuleset = async (id: string, r: App.RuleSet) => {
     const idx = rulesets.value.findIndex((v) => v.id === id)
     if (idx === -1) return
-    const backup = rulesets.value.splice(idx, 1, r)[0]
+    const backup = rulesets.value.splice(idx, 1, r)[0]!
     try {
       await saveRulesets()
     } catch (error) {
       rulesets.value.splice(idx, 1, backup)
       throw error
     }
+
+    eventBus.emit('rulesetChange', { id })
   }
 
-  const _doUpdateRuleset = async (r: RuleSetType) => {
+  const _doUpdateRuleset = async (r: App.RuleSet) => {
     if (r.format === RulesetFormat.Source) {
       let body = ''
-      let ruleset: any
       let isExist = true
 
       if (r.type === 'File') {
-        body = await Readfile(r.url)
+        body = await ReadFile(r.url)
       } else if (r.type === 'Http') {
         const { body: b } = await HttpGet(r.url)
         body = b
@@ -82,11 +90,10 @@ export const useRulesetsStore = defineStore('rulesets', () => {
           body = JSON.stringify(body)
         }
       } else if (r.type === 'Manual') {
-        isExist = await FileExists(r.path)
-        if (isExist) {
-          body = await Readfile(r.path)
-        } else {
+        body = await ReadFile(r.path).catch(() => '')
+        if (!body) {
           body = JSON.stringify(EmptyRuleSet)
+          isExist = false
         }
       }
 
@@ -94,28 +101,28 @@ export const useRulesetsStore = defineStore('rulesets', () => {
         throw 'Not a valid ruleset data'
       }
 
-      ruleset = JSON.parse(body)
+      const ruleset = JSON.parse(body)
 
       r.count = ruleset.rules.reduce(
         (p: number, c: string[]) =>
           Object.values(c).reduce(
             (p, c: string[] | string) => (Array.isArray(c) ? p + c.length : p + 1),
-            0
+            0,
           ) + p,
-        0
+        0,
       )
 
       if (
         (['Http', 'File'].includes(r.type) && r.url !== r.path) ||
         (r.type === 'Manual' && !isExist)
       ) {
-        await Writefile(r.path, JSON.stringify(ruleset, null, 2))
+        await WriteFile(r.path, JSON.stringify(ruleset, null, 2))
       }
     }
 
     if (r.format === RulesetFormat.Binary) {
       if (r.type === 'File' && r.url !== r.path) {
-        await Copyfile(r.url, r.path)
+        await CopyFile(r.url, r.path)
       } else if (r.type === 'Http') {
         await Download(r.url, r.path)
       }
@@ -127,31 +134,64 @@ export const useRulesetsStore = defineStore('rulesets', () => {
   const updateRuleset = async (id: string) => {
     const r = rulesets.value.find((v) => v.id === id)
     if (!r) throw id + ' Not Found'
-    if (r.disabled) throw r.tag + ' Disabled'
+    if (r.disabled) throw r.name + ' Disabled'
     try {
       r.updating = true
       await _doUpdateRuleset(r)
       await saveRulesets()
-      return `Ruleset [${r.tag}] updated successfully.`
     } finally {
       r.updating = false
     }
+
+    eventBus.emit('rulesetChange', { id })
+
+    return `Ruleset [${r.name}] updated successfully.`
   }
 
   const updateRulesets = async () => {
     let needSave = false
-    for (let i = 0; i < rulesets.value.length; i++) {
-      const r = rulesets.value[i]
-      if (r.disabled) continue
+
+    const update = async (r: App.RuleSet) => {
+      const result = { ok: true, id: r.id, name: r.name, result: '' }
       try {
         r.updating = true
         await _doUpdateRuleset(r)
         needSave = true
+        result.result = `Rule-Set [${r.name}] updated successfully.`
+      } catch (error: any) {
+        result.ok = false
+        result.result = `Failed to update rule-set [${r.name}]. Reason: ${error.message || error}`
       } finally {
         r.updating = false
       }
+      return result
     }
-    if (needSave) saveRulesets()
+
+    const result = await asyncPool(
+      5,
+      rulesets.value.filter((v) => !v.disabled),
+      update,
+    )
+
+    if (needSave) await saveRulesets()
+
+    eventBus.emit('rulesetsChange', undefined)
+
+    return result.flatMap((v) => (v.ok && v.value) || [])
+  }
+
+  const rulesetHubLoading = ref(false)
+  const updateRulesetHub = async () => {
+    rulesetHubLoading.value = true
+    try {
+      const { body } = await HttpGet<string>(
+        'https://github.com/GUI-for-Cores/Ruleset-Hub/releases/download/latest/sing-full.json',
+      )
+      rulesetHub.value = JSON.parse(body)
+      await WriteFile(RulesetHubFilePath, body)
+    } finally {
+      rulesetHubLoading.value = false
+    }
   }
 
   const getRulesetById = (id: string) => rulesets.value.find((v) => v.id === id)
@@ -165,6 +205,10 @@ export const useRulesetsStore = defineStore('rulesets', () => {
     deleteRuleset,
     updateRuleset,
     updateRulesets,
-    getRulesetById
+    getRulesetById,
+
+    rulesetHub,
+    rulesetHubLoading,
+    updateRulesetHub,
   }
 })

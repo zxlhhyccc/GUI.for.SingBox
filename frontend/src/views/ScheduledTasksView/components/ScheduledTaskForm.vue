@@ -1,32 +1,29 @@
 <script setup lang="ts">
-import { ref, inject } from 'vue'
+import { ref, inject, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { useMessage } from '@/hooks'
-import { deepClone, sampleID } from '@/utils'
-import { ValidateCron } from '@/bridge/scheduledTasks'
-import { ScheduledTasksType, ScheduledTaskOptions } from '@/constant'
+import { IsNotificationAvailable, RequestNotificationAuthorization } from '@/bridge'
+import { ScheduledTaskOptions } from '@/constant/app'
+import { ScheduledTasksType } from '@/enums/app'
 import {
-  type ScheduledTaskType,
   useScheduledTasksStore,
   useSubscribesStore,
   useRulesetsStore,
-  usePluginsStore
+  usePluginsStore,
 } from '@/stores'
+import { alert, deepClone, formatDate, isValidCron, message, sampleID } from '@/utils'
+
+import Button from '@/components/Button/index.vue'
 
 interface Props {
   id?: string
-  isUpdate?: boolean
 }
 
-const props = withDefaults(defineProps<Props>(), {
-  id: '',
-  isUpdate: false
-})
+const props = defineProps<Props>()
 
 const loading = ref(false)
 
-const task = ref<ScheduledTaskType>({
+const task = ref<App.ScheduledTask>({
   id: sampleID(),
   name: '',
   type: ScheduledTasksType.RunScript,
@@ -37,32 +34,29 @@ const task = ref<ScheduledTaskType>({
   cron: '',
   notification: false,
   disabled: false,
-  lastTime: 0
+  lastTime: 0,
 })
 
 const { t } = useI18n()
-const { message } = useMessage()
 const scheduledTasksStore = useScheduledTasksStore()
 const subscribesStore = useSubscribesStore()
 const rulesetsStore = useRulesetsStore()
 const pluginsStore = usePluginsStore()
 
 const handleCancel = inject('cancel') as any
+const handleSubmit = inject('submit') as any
 
-const handleSubmit = async () => {
-  try {
-    await ValidateCron(task.value.cron)
-  } catch (error: any) {
-    message.error(error)
+const handleSave = async () => {
+  const { ok, reason } = isValidCron(task.value.cron)
+  if (!ok) {
+    message.error(reason)
     return
   }
-
-  loading.value = true
 
   switch (task.value.type) {
     case ScheduledTasksType.UpdateSubscription:
       task.value.subscriptions = task.value.subscriptions.filter((id) =>
-        subscribesStore.getSubscribeById(id)
+        subscribesStore.getSubscribeById(id),
       )
       break
     case ScheduledTasksType.UpdateRuleset:
@@ -74,13 +68,15 @@ const handleSubmit = async () => {
       break
   }
 
+  loading.value = true
+
   try {
-    if (props.isUpdate) {
+    if (props.id) {
       await scheduledTasksStore.editScheduledTask(props.id, task.value)
     } else {
       await scheduledTasksStore.addScheduledTask(task.value)
     }
-    handleCancel()
+    await handleSubmit()
   } catch (error: any) {
     console.error(error)
     message.error(error)
@@ -98,157 +94,177 @@ const handleUse = (list: string[], id: string) => {
   }
 }
 
-if (props.isUpdate) {
+const handleValidate = () => {
+  const { ok, reason } = isValidCron(task.value.cron)
+  if (!ok) {
+    message.error(reason)
+    return
+  }
+  message.success('common.success')
+}
+
+const handleViewNextRuns = () => {
+  const { ok, reason, instance } = isValidCron(task.value.cron)
+  if (!ok) {
+    message.error(reason)
+    return
+  }
+  const list = instance!.nextRuns(99).map((v, i) => {
+    const index = (i + 1).toString().padStart(2, '0')
+    return index + ' - '.repeat(14) + formatDate(v.getTime(), 'YYYY/MM/DD HH:mm:ss')
+  })
+  alert('Next Run Time', list.join('\n'))
+}
+
+const onNotificationChange = async (v: boolean) => {
+  if (v) {
+    try {
+      if (!(await IsNotificationAvailable())) {
+        throw 'Notifications not available on this platform'
+      }
+      await RequestNotificationAuthorization()
+    } catch (error: any) {
+      task.value.notification = false
+      message.warn(error)
+    }
+  }
+}
+
+if (props.id) {
   const s = scheduledTasksStore.getScheduledTaskById(props.id)
   if (s) {
     task.value = deepClone(s)
   }
 }
+
+const modalSlots = {
+  cancel: () =>
+    h(
+      Button,
+      {
+        disabled: loading.value,
+        onClick: handleCancel,
+      },
+      () => t('common.cancel'),
+    ),
+  submit: () =>
+    h(
+      Button,
+      {
+        type: 'primary',
+        loading: loading.value,
+        disabled: !task.value.name || !task.value.cron,
+        onClick: handleSave,
+      },
+      () => t('common.save'),
+    ),
+}
+
+defineExpose({ modalSlots })
 </script>
 
 <template>
-  <div class="form">
+  <div>
     <div class="form-item">
-      <div class="name">{{ t('scheduledtask.name') }} *</div>
-      <Input v-model="task.name" auto-size autofocus class="input" />
+      {{ t('scheduledtask.name') }} *
+      <div class="min-w-[75%]">
+        <Input v-model="task.name" autofocus class="w-full" />
+      </div>
     </div>
     <div class="form-item">
-      <div class="name">{{ t('scheduledtask.cron') }} *</div>
-      <Input
-        v-model="task.cron"
-        :placeholder="t('scheduledtask.cronTips')"
-        auto-size
-        class="input"
-      />
+      {{ t('scheduledtask.cron') }} *
+      <div class="min-w-[75%]">
+        <Input v-model="task.cron" :placeholder="t('scheduledtask.cronTips')" class="w-full">
+          <template #suffix>
+            <Button type="primary" size="small" @click="handleValidate">Validate</Button>
+            <Button type="primary" size="small" class="ml-4" @click="handleViewNextRuns">
+              Next Run Time
+            </Button>
+          </template>
+        </Input>
+      </div>
     </div>
     <div class="form-item">
-      <div class="name" style="padding-right: 16px">{{ t('scheduledtask.type') }}</div>
-      <Radio v-model="task.type" :options="ScheduledTaskOptions" />
+      <div>{{ t('scheduledtask.type') }}</div>
+      <Radio v-model="task.type" :options="ScheduledTaskOptions.slice(5)" />
     </div>
     <div class="form-item">
-      <div class="name">{{ t('scheduledtask.notification') }}</div>
-      <Switch v-model="task.notification" />
+      <div></div>
+      <Radio v-model="task.type" :options="ScheduledTaskOptions.slice(0, 5)" />
+    </div>
+    <div class="form-item">
+      {{ t('scheduledtask.notification') }}
+      <Switch v-model="task.notification" @change="onNotificationChange" />
     </div>
 
     <div v-if="task.type === ScheduledTasksType.UpdateSubscription">
-      <div class="name form-item-title">{{ t('scheduledtask.subscriptions') }}</div>
+      <Divider>{{ t('scheduledtask.subscriptions') }}</Divider>
       <Empty v-if="subscribesStore.subscribes.length === 0" />
-      <div class="task-list">
+      <div class="grid grid-cols-3 gap-8">
         <Card
           v-for="s in subscribesStore.subscribes"
           :key="s.id"
           :title="s.name"
           :selected="task.subscriptions.includes(s.id)"
           @click="handleUse(task.subscriptions, s.id)"
-          class="task-list-item"
         >
-          <div class="details">{{ s.type }}</div>
+          <div class="text-12 line-clamp-2">{{ s.type }}</div>
         </Card>
       </div>
     </div>
 
     <div v-else-if="task.type === ScheduledTasksType.UpdateRuleset">
-      <div class="name form-item-title">{{ t('scheduledtask.rulesets') }}</div>
+      <Divider>{{ t('scheduledtask.rulesets') }}</Divider>
       <Empty v-if="rulesetsStore.rulesets.length === 0" />
-      <div class="task-list">
+      <div class="grid grid-cols-3 gap-8">
         <Card
           v-for="r in rulesetsStore.rulesets"
           :key="r.id"
-          :title="r.tag"
+          :title="r.name"
           :selected="task.rulesets.includes(r.id)"
           @click="handleUse(task.rulesets, r.id)"
-          class="task-list-item"
         >
-          <div class="details">{{ r.type }}</div>
+          <div class="text-12 line-clamp-2">{{ r.type }}</div>
         </Card>
       </div>
     </div>
 
     <div v-else-if="task.type === ScheduledTasksType.UpdatePlugin">
-      <div class="name form-item-title">{{ t('scheduledtask.plugins') }}</div>
+      <Divider>{{ t('scheduledtask.plugins') }}</Divider>
       <Empty v-if="pluginsStore.plugins.length === 0" />
-      <div class="task-list">
+      <div class="grid grid-cols-3 gap-8">
         <Card
           v-for="p in pluginsStore.plugins"
           :key="p.id"
           :title="p.name"
           :selected="task.plugins.includes(p.id)"
           @click="handleUse(task.plugins, p.id)"
-          class="task-list-item"
         >
-          <div class="details">{{ p.type }}</div>
+          <div class="text-12 line-clamp-2">{{ p.type }}</div>
         </Card>
       </div>
     </div>
 
     <div v-else-if="task.type === ScheduledTasksType.RunPlugin">
-      <div class="name form-item-title">{{ t('scheduledtask.plugins') }}</div>
+      <Divider>{{ t('scheduledtask.plugins') }}</Divider>
       <Empty v-if="pluginsStore.plugins.length === 0" />
-      <div class="task-list">
+      <div class="grid grid-cols-3 gap-8">
         <Card
           v-for="p in pluginsStore.plugins"
-          v-tips="p.description"
           :key="p.id"
+          v-tips="p.description"
           :title="p.name"
           :selected="task.plugins.includes(p.id)"
           @click="handleUse(task.plugins, p.id)"
-          class="task-list-item"
         >
-          <div class="details">{{ p.description }}</div>
+          <div class="text-12 line-clamp-2">{{ p.description }}</div>
         </Card>
       </div>
     </div>
 
     <div v-else-if="task.type === ScheduledTasksType.RunScript">
-      <div class="name form-item-title">{{ t('scheduledtask.script') }}</div>
-      <CodeViewer v-model="task.script" editable lang="javascript" />
+      <Divider>{{ t('scheduledtask.script') }}</Divider>
+      <CodeEditor v-model="task.script" editable lang="javascript" />
     </div>
   </div>
-
-  <div class="form-action">
-    <Button @click="handleCancel">{{ t('common.cancel') }}</Button>
-    <Button
-      @click="handleSubmit"
-      :loading="loading"
-      :disabled="!task.name || !task.cron"
-      type="primary"
-    >
-      {{ t('common.save') }}
-    </Button>
-  </div>
 </template>
-
-<style lang="less" scoped>
-.form {
-  padding: 0 8px;
-  overflow-y: auto;
-  max-height: 70vh;
-  .name {
-    font-size: 14px;
-    padding: 8px 0;
-    white-space: nowrap;
-  }
-  .input {
-    width: 80%;
-  }
-  .form-item-title {
-    margin: 8px 4px;
-  }
-}
-
-.task-list {
-  display: flex;
-  flex-wrap: wrap;
-  &-item {
-    margin: 4px;
-    width: calc(33.333333% - 8px);
-    .details {
-      font-size: 12px;
-      padding: 4px 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-  }
-}
-</style>

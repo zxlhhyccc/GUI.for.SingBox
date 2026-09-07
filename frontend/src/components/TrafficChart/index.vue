@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch, onActivated } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch, onActivated, useTemplateRef } from 'vue'
 
 import { formatBytes } from '@/utils'
 
@@ -13,11 +13,11 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {
   height: 214,
   padding: 50,
-  legend: () => ['upload', 'download']
+  legend: () => ['upload', 'download'],
 })
 
 const MAX_HISTORY = 60
-const svgRef = ref<SVGElement>()
+const svgRef = useTemplateRef<SVGAElement>('svgRef')
 const width = ref(200)
 const points = ref<string[]>([])
 const showLines = ref([true, true])
@@ -30,8 +30,8 @@ const strokeColors = computed(() => {
 })
 
 const maxValue = computed(() => {
-  const maxUpload = Math.max(...props.series[0], props.height)
-  const maxDownload = Math.max(...props.series[1], props.height)
+  const maxUpload = Math.max(...props.series[0]!, props.height)
+  const maxDownload = Math.max(...props.series[1]!, props.height)
   if (showLines.value[0] && showLines.value[1]) return Math.max(maxUpload, maxDownload)
   if (showLines.value[0]) return maxUpload
   if (showLines.value[1]) return maxDownload
@@ -46,14 +46,15 @@ const updateSvgWidth = () => {
 }
 
 const updateChart = () => {
-  let { height, padding } = props
+  const { padding } = props
+  let { height } = props
   const paddingY = height / 8
   height -= paddingY
   points.value = props.series.map((s, index) => {
     if (!showLines.value[index]) return ''
     const newS = [...s]
     if (newS.length < MAX_HISTORY) {
-      newS.unshift(...new Array(MAX_HISTORY - s.length).fill(0))
+      newS.unshift(...Array.from({ length: MAX_HISTORY - s.length }, () => 0))
     }
     const spacing = (width.value - padding) / newS.length
     const point = newS.reduce((p, c, i) => {
@@ -92,12 +93,13 @@ watch(() => props.series, updateChart, { deep: true })
 </script>
 
 <template>
-  <div class="chart">
+  <div class="gui-traffic-chart rounded-8">
     <svg ref="svgRef" :height="height + 'px'" width="100%" xmlns="http://www.w3.org/2000/svg">
       <text
         v-for="i in 8"
         :key="i"
         :y="i * (height / 8) - 4"
+        class="traffic-chart__axis-label"
         style="font-size: 8px"
         x="4"
         fill="var(--primary-color)"
@@ -112,6 +114,7 @@ watch(() => props.series, updateChart, { deep: true })
         :x2="width - 2"
         :y2="i * (height / 8) - 7"
         :x1="padding"
+        class="traffic-chart__grid-line"
         stroke-dasharray="1 4"
         stroke="var(--color)"
       />
@@ -123,6 +126,7 @@ watch(() => props.series, updateChart, { deep: true })
           :points="point"
           :stroke="strokeColors[index]"
           :fill="fillColors[index]"
+          :class="index === 0 ? 'traffic-chart__series--upload' : 'traffic-chart__series--download'"
           stroke-width="2"
         />
       </template>
@@ -130,34 +134,34 @@ watch(() => props.series, updateChart, { deep: true })
       <circle
         :cx="width / 2 - 40"
         :fill="strokeColors[0]"
-        @click="toggleUpload"
         r="3"
         cy="10"
-        class="pointer"
+        class="text-10 cursor-pointer"
+        @click="toggleUpload"
       />
       <circle
         :cx="width / 2 + 20"
         :fill="strokeColors[1]"
-        @click="toggleDownload"
         r="3"
         cy="10"
-        class="pointer"
+        class="text-10 cursor-pointer"
+        @click="toggleDownload"
       />
       <text
         :x="width / 2 - 34"
         :fill="strokeColors[0]"
-        @click="toggleUpload"
         y="14"
-        class="pointer"
+        class="text-10 cursor-pointer"
+        @click="toggleUpload"
       >
         {{ legend[0] }}
       </text>
       <text
         :x="width / 2 + 28"
         :fill="strokeColors[1]"
-        @click="toggleDownload"
         y="14"
-        class="pointer"
+        class="text-10 cursor-pointer"
+        @click="toggleDownload"
       >
         {{ legend[1] }}
       </text>
@@ -166,13 +170,7 @@ watch(() => props.series, updateChart, { deep: true })
 </template>
 
 <style lang="less" scoped>
-.chart {
+.gui-traffic-chart {
   background: var(--card-bg);
-  border-radius: 8px;
-}
-
-.pointer {
-  font-size: 10px;
-  cursor: pointer;
 }
 </style>

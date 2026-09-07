@@ -1,23 +1,24 @@
 <script lang="ts" setup>
-import { useI18n } from 'vue-i18n'
 import { ref, computed, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 
-import { useBool, useMessage, usePicker } from '@/hooks'
-import { type PickerItem } from '@/components/Picker/index.vue'
-import { DraggableOptions } from '@/constant'
-import { useAppSettingsStore, type Menu } from '@/stores'
-import type { KernelConnectionsWS } from '@/api/kernel.schema'
-import { getKernelConnectionsWS, deleteConnection } from '@/api/kernel'
+import { deleteConnection } from '@/api/kernel'
+import { DraggableOptions } from '@/constant/app'
+import { DefaultConnections } from '@/constant/kernel'
+import { useBool } from '@/hooks'
+import { useAppSettingsStore, useKernelApiStore } from '@/stores'
 import {
   addToRuleSet,
   formatBytes,
   formatRelativeTime,
-  // addToRuleSet,
-  // ignoredError,
-  setIntervalImmediately
+  getDomainSuffixes,
+  message,
+  picker,
 } from '@/utils'
 
+import type { PickerItem } from '@/components/Picker/index.vue'
 import type { Column } from '@/components/Table/index.vue'
+import type { CoreApiConnectionsData } from '@/types/kernel'
 
 type TrafficCacheType = { up: number; down: number }
 const TrafficCache: Record<string, TrafficCacheType> = {}
@@ -35,20 +36,13 @@ const columns = computed(() =>
         sort: (a, b) => b.metadata.type.localeCompare(a.metadata.type),
         customRender: ({ value, record }) => {
           return value + '(' + record.metadata.network + ')'
-        }
-      },
-      {
-        title: 'home.connections.process',
-        align: 'center',
-        key: 'metadata.process',
-        hidden: !appSettingsStore.app.connections.visibility['metadata.process'],
-        sort: (a, b) => b.metadata.process.localeCompare(a.metadata.process)
+        },
       },
       {
         title: 'home.connections.processPath',
         key: 'metadata.processPath',
         hidden: !appSettingsStore.app.connections.visibility['metadata.processPath'],
-        sort: (a, b) => b.metadata.processPath.localeCompare(a.metadata.processPath)
+        sort: (a, b) => b.metadata.processPath.localeCompare(a.metadata.processPath),
       },
       {
         title: 'home.connections.host',
@@ -56,15 +50,8 @@ const columns = computed(() =>
         hidden: !appSettingsStore.app.connections.visibility['metadata.host'],
         sort: (a, b) => b.metadata.host.localeCompare(a.metadata.host),
         customRender: ({ value, record }) => {
-          return (value || record.metadata.destinationIP) + ':' + record.metadata.destinationPort
-        }
-      },
-      {
-        title: 'home.connections.sniffHost',
-        align: 'center',
-        key: 'metadata.sniffHost',
-        hidden: !appSettingsStore.app.connections.visibility['metadata.sniffHost'],
-        sort: (a, b) => b.metadata.sniffHost.localeCompare(a.metadata.sniffHost)
+          return value || record.metadata.destinationIP
+        },
       },
       {
         title: 'home.connections.sourceIP',
@@ -74,17 +61,17 @@ const columns = computed(() =>
         sort: (a, b) => b.metadata.sourceIP.localeCompare(a.metadata.sourceIP),
         customRender: ({ value, record }) => {
           return value + ':' + record.metadata.sourcePort
-        }
+        },
       },
       {
-        title: 'home.connections.remoteDestination',
+        title: 'home.connections.destinationIP',
         align: 'center',
-        key: 'metadata.remoteDestination',
-        hidden: !appSettingsStore.app.connections.visibility['metadata.remoteDestination'],
-        sort: (a, b) => b.metadata.remoteDestination.localeCompare(a.metadata.remoteDestination),
+        key: 'metadata.destinationIP',
+        hidden: !appSettingsStore.app.connections.visibility['metadata.destinationIP'],
+        sort: (a, b) => b.metadata.destinationIP.localeCompare(a.metadata.destinationIP),
         customRender: ({ value, record }) => {
           return value + ':' + record.metadata.destinationPort
-        }
+        },
       },
       {
         title: 'home.connections.rule',
@@ -94,14 +81,14 @@ const columns = computed(() =>
         sort: (a, b) => b.rule.localeCompare(a.rule),
         customRender: ({ value, record }) => {
           return value + (record.rulePayload ? '::' + record.rulePayload : '')
-        }
+        },
       },
       {
         title: 'home.connections.chains',
         key: 'chains',
         hidden: !appSettingsStore.app.connections.visibility['chains'],
         sort: (a, b) => b.chains[0].localeCompare(a.chains[0]),
-        customRender: ({ value }) => value.slice().reverse().join(' :: ')
+        customRender: ({ value }) => value.slice().reverse().join(' :: '),
       },
       {
         title: 'home.connections.uploadSpeed',
@@ -110,7 +97,7 @@ const columns = computed(() =>
         minWidth: '90px',
         hidden: !appSettingsStore.app.connections.visibility['up'],
         sort: (a, b) => b.upload - b.up - (a.upload - a.up),
-        customRender: ({ value, record }) => formatBytes(record.upload - value) + '/s'
+        customRender: ({ value, record }) => formatBytes(record.upload - value) + '/s',
       },
       {
         title: 'home.connections.downSpeed',
@@ -119,7 +106,7 @@ const columns = computed(() =>
         minWidth: '90px',
         hidden: !appSettingsStore.app.connections.visibility['down'],
         sort: (a, b) => b.download - b.down - (a.download - a.down),
-        customRender: ({ value, record }) => formatBytes(record.download - value) + '/s'
+        customRender: ({ value, record }) => formatBytes(record.download - value) + '/s',
       },
       {
         title: 'home.connections.upload',
@@ -127,7 +114,7 @@ const columns = computed(() =>
         key: 'upload',
         hidden: !appSettingsStore.app.connections.visibility['upload'],
         sort: (a, b) => b.upload - a.upload,
-        customRender: ({ value }) => formatBytes(value)
+        customRender: ({ value }) => formatBytes(value),
       },
       {
         title: 'home.connections.download',
@@ -135,7 +122,7 @@ const columns = computed(() =>
         key: 'download',
         hidden: !appSettingsStore.app.connections.visibility['download'],
         sort: (a, b) => b.download - a.download,
-        customRender: ({ value }) => formatBytes(value)
+        customRender: ({ value }) => formatBytes(value),
       },
       {
         title: 'home.connections.time',
@@ -143,31 +130,31 @@ const columns = computed(() =>
         key: 'start',
         hidden: !appSettingsStore.app.connections.visibility['start'],
         sort: (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime(),
-        customRender: ({ value }) => formatRelativeTime(value)
-      }
+        customRender: ({ value }) => formatRelativeTime(value),
+      },
     ] as Column[]
   ).sort(
     (a, b) =>
       appSettingsStore.app.connections.order.indexOf(a.key) -
-      appSettingsStore.app.connections.order.indexOf(b.key)
-  )
+      appSettingsStore.app.connections.order.indexOf(b.key),
+  ),
 )
 
 const columnTitleMap = computed(() => {
   const map: Record<string, string | undefined> = {}
   appSettingsStore.app.connections.order.forEach(
-    (field) => (map[field] = columns.value.find((column) => column.key === field)?.title)
+    (field) => (map[field] = columns.value.find((column) => column.key === field)?.title),
   )
   return map
 })
 
-const menu: Menu[] = [
+const menu: App.Menu[] = [
   {
     label: 'common.details',
     handler: (record: Record<string, any>) => {
       details.value = JSON.stringify(record, null, 2)
       toggleDetails()
-    }
+    },
   },
   {
     label: 'home.connections.close',
@@ -179,67 +166,106 @@ const menu: Menu[] = [
         console.log(error)
         message.error(error)
       }
-    }
+    },
   },
-  ...[
-    ['home.connections.addToDirect', 'direct'],
-    ['home.connections.addToProxy', 'proxy'],
-    ['home.connections.addToReject', 'block']
-  ].map(([label, ruleset]) => {
+  ...(
+    [
+      ['home.connections.addToDirect', 'direct'],
+      ['home.connections.addToProxy', 'proxy'],
+      ['home.connections.addToReject', 'reject'],
+    ] as const
+  ).map(([label, ruleset]) => {
     return {
       label,
       handler: async (record: Record<string, any>) => {
-        const options: PickerItem[] = []
+        const options: PickerItem<Record<string, any>[]>[] = []
         if (record.metadata.host) {
           options.push({
-            label: t('kernel.rules.type.DOMAIN'),
+            label: t('kernel.rules.type.domain'),
             value: { domain: record.metadata.host } as any,
-            description: record.metadata.host
+            description: record.metadata.host,
+          })
+          getDomainSuffixes(record.metadata.host).forEach((suffix) => {
+            options.push({
+              label: t('kernel.rules.type.domain_suffix'),
+              value: {
+                domain_suffix: suffix,
+              } as any,
+              description: suffix,
+            })
           })
         }
         if (record.metadata.destinationIP) {
           options.push({
-            label: t('kernel.rules.type.IP-CIDR'),
+            label: t('kernel.rules.type.ip_cidr'),
             value: { ip_cidr: record.metadata.destinationIP + '/32' } as any,
-            description: record.metadata.destinationIP
+            description: record.metadata.destinationIP,
           })
         }
         if (record.metadata.processPath) {
           options.push({
-            label: t('kernel.rules.type.PROCESS-PATH'),
+            label: t('kernel.rules.type.process_path'),
             value: { process_path: record.metadata.processPath } as any,
-            description: record.metadata.processPath
+            description: record.metadata.processPath,
           })
         }
-        const payloads = await picker.multi<Record<string, any>[]>(
-          'rulesets.selectRuleType',
-          options
-        )
+        const payloads = await picker.multi('rulesets.selectRuleType', options)
         try {
-          await addToRuleSet(ruleset as any, payloads)
+          await addToRuleSet(ruleset, payloads)
           message.success('common.success')
         } catch (error: any) {
           message.error(error)
           console.log(error)
         }
-      }
+      },
     }
-  })
+  }),
 ]
 
 const details = ref()
 const isActive = ref(true)
 const keywords = ref('')
-const dataSource = ref<(KernelConnectionsWS['connections'][0] & TrafficCacheType)[]>([])
-const disconnectedData = ref<KernelConnectionsWS['connections']>([])
+const dataSource = ref<(CoreApiConnectionsData['connections'][0] & TrafficCacheType)[]>([])
+const disconnectedData = ref<CoreApiConnectionsData['connections']>([])
 const [showDetails, toggleDetails] = useBool(false)
 const [showSettings, toggleSettings] = useBool(false)
 const [isPause, togglePause] = useBool(false)
-const { message } = useMessage()
-const { picker } = usePicker()
 const { t } = useI18n()
+const kernelApiStore = useKernelApiStore()
 
-const onConnections = (data: KernelConnectionsWS) => {
+const filteredConnections = computed(() => {
+  if (!keywords.value) return isActive.value ? dataSource.value : disconnectedData.value
+  return (isActive.value ? dataSource.value : disconnectedData.value).filter((connection) =>
+    Object.values(connection.metadata).some((v) =>
+      String(v).toLocaleLowerCase().includes(keywords.value.toLocaleLowerCase()),
+    ),
+  )
+})
+
+const handleCloseAll = async () => {
+  try {
+    await Promise.all(
+      filteredConnections.value.map((connection) => deleteConnection(connection.id)),
+    )
+    disconnectedData.value.push(...filteredConnections.value)
+    dataSource.value = dataSource.value.filter(
+      (connection) => !filteredConnections.value.find((c) => c.id === connection.id),
+    )
+  } catch (error: any) {
+    message.error(error.message || error)
+  }
+}
+
+const handleClearClosedConns = () => {
+  disconnectedData.value.splice(0)
+}
+
+const handleResetConnections = () => {
+  appSettingsStore.app.connections = DefaultConnections()
+  message.success('common.success')
+}
+
+const unregisterConnectionsHandler = kernelApiStore.onConnections((data) => {
   if (isPause.value) return
   const connections = data.connections || []
 
@@ -257,100 +283,67 @@ const onConnections = (data: KernelConnectionsWS) => {
     result.down = cache?.down || connection.download
     TrafficCache[connection.id] = {
       down: connection.download,
-      up: connection.upload
+      up: connection.upload,
     }
     return result
   })
-}
-
-const filteredConnections = computed(() => {
-  if (!keywords.value) return isActive.value ? dataSource.value : disconnectedData.value
-  return (isActive.value ? dataSource.value : disconnectedData.value).filter((connection) =>
-    Object.values(connection.metadata).some((v) =>
-      String(v).toLocaleLowerCase().includes(keywords.value.toLocaleLowerCase())
-    )
-  )
 })
 
-const handleCloseAll = async () => {
-  try {
-    await Promise.all(
-      filteredConnections.value.map((connection) => deleteConnection(connection.id))
-    )
-    disconnectedData.value.push(...filteredConnections.value)
-    dataSource.value = dataSource.value.filter(
-      (connection) => !filteredConnections.value.find((c) => c.id === connection.id)
-    )
-  } catch (error: any) {
-    message.error(error.message || error)
-  }
-}
-
-const handleClearClosedConns = () => {
-  disconnectedData.value.splice(0)
-}
-
-const { connect, disconnect } = getKernelConnectionsWS(onConnections)
-const timer = setIntervalImmediately(connect, 1000)
-
 onUnmounted(() => {
-  clearInterval(timer)
-  disconnect()
+  unregisterConnectionsHandler()
 })
 </script>
 
 <template>
-  <div class="connections">
-    <div class="form">
-      <Radio
-        v-model="isActive"
-        :options="[
-          { label: 'home.connections.active', value: true },
-          { label: 'home.connections.closed', value: false }
-        ]"
-        size="small"
+  <ModalContainer :scrollable="false">
+    <template #top>
+      <div class="flex items-center">
+        <Radio
+          v-model="isActive"
+          :options="[
+            { label: 'home.connections.active', value: true },
+            { label: 'home.connections.closed', value: false },
+          ]"
+          size="small"
+        />
+        <Input v-model="keywords" clearable size="small" placeholder="Search" class="ml-8 flex-1" />
+        <Button
+          :icon="isPause ? 'play' : 'pause'"
+          size="small"
+          type="text"
+          class="ml-8"
+          @click="togglePause"
+        />
+        <Button
+          v-if="isActive"
+          v-tips="'home.connections.closeAll'"
+          icon="close"
+          size="small"
+          type="text"
+          @click="handleCloseAll"
+        />
+        <Button
+          v-else
+          v-tips="'common.clear'"
+          size="small"
+          icon="clear"
+          type="text"
+          @click="handleClearClosedConns"
+        />
+        <Button icon="settings" size="small" type="text" @click="toggleSettings" />
+      </div>
+    </template>
+
+    <template #body>
+      <Table
+        class="h-full"
+        :columns="columns"
+        :menu="menu"
+        :data-source="filteredConnections"
+        sort="start"
       />
-      <Input
-        v-model="keywords"
-        clearable
-        auto-size
-        size="small"
-        placeholder="Search"
-        class="ml-8 flex-1"
-      />
-      <Button
-        @click="togglePause"
-        :icon="isPause ? 'play' : 'pause'"
-        size="small"
-        type="text"
-        class="ml-8"
-      />
-      <Button
-        v-if="isActive"
-        @click="handleCloseAll"
-        v-tips="'home.connections.closeAll'"
-        icon="close"
-        size="small"
-        type="text"
-      />
-      <Button
-        v-else
-        @click="handleClearClosedConns"
-        v-tips="'common.clear'"
-        icon="clear"
-        size="small"
-        type="text"
-      />
-      <Button @click="toggleSettings" icon="settings" size="small" type="text" />
-    </div>
-    <Table
-      :columns="columns"
-      :menu="menu"
-      :data-source="filteredConnections"
-      sort="start"
-      class="mt-8"
-    />
-  </div>
+    </template>
+  </ModalContainer>
 
   <Modal
     v-model:open="showDetails"
@@ -361,7 +354,7 @@ onUnmounted(() => {
     max-width="80"
     mask-closable
   >
-    <CodeViewer v-model="details" />
+    <CodeEditor v-model="details" />
   </Modal>
 
   <Modal
@@ -372,34 +365,18 @@ onUnmounted(() => {
     cancel-text="common.close"
     title="home.connections.sort"
   >
+    <template #action>
+      <Button type="text" class="mr-auto" @click="handleResetConnections">
+        {{ t('common.reset') }}
+      </Button>
+    </template>
     <div v-draggable="[appSettingsStore.app.connections.order, DraggableOptions]">
-      <Card
-        v-for="column in appSettingsStore.app.connections.order"
-        :key="column"
-        class="field-item"
-      >
-        <span class="font-bold">{{ t(columnTitleMap[column] || column) }}</span>
-        <Switch v-model="appSettingsStore.app.connections.visibility[column]" class="ml-auto" />
+      <Card v-for="column in appSettingsStore.app.connections.order" :key="column" class="mb-2">
+        <div class="flex items-center justify-between py-2">
+          <span class="font-bold">{{ t(columnTitleMap[column] || column) }}</span>
+          <Switch v-model="appSettingsStore.app.connections.visibility[column]" />
+        </div>
       </Card>
     </div>
   </Modal>
 </template>
-
-<style lang="less" scoped>
-.connections {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-.form {
-  display: flex;
-  align-items: center;
-}
-
-.field-item {
-  display: flex;
-  align-items: center;
-  padding: 0 8px;
-  margin-bottom: 2px;
-}
-</style>

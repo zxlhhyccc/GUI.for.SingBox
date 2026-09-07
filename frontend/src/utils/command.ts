@@ -1,8 +1,8 @@
+import { RestartApp } from '@/bridge'
+import { ColorOptions, ThemeOptions } from '@/constant/app'
+import { ModeOptions } from '@/constant/kernel'
+import { PluginTrigger, PluginTriggerEvent } from '@/enums/app'
 import useI18n from '@/lang'
-import { Color, Lang, PluginTrigger, PluginTriggerEvent, Theme } from '@/constant'
-import { handleChangeMode } from '@/utils'
-import { useMessage } from '@/hooks'
-import { ExitApp, RestartApp, WindowReloadApp } from '@/bridge'
 import {
   useAppSettingsStore,
   useAppStore,
@@ -10,8 +10,9 @@ import {
   useKernelApiStore,
   usePluginsStore,
   useRulesetsStore,
-  useSubscribesStore
+  useSubscribesStore,
 } from '@/stores'
+import { exitApp, handleChangeMode, message, reloadApp } from '@/utils'
 
 type Command = {
   label: string
@@ -48,73 +49,57 @@ export const getCommands = () => {
   const subscriptionsStore = useSubscribesStore()
   const rulesetsStore = useRulesetsStore()
   const pluginsStore = usePluginsStore()
-  const { message } = useMessage()
 
   const rawCommands: Command[] = [
     {
       label: 'tray.kernel',
-      cmd: 'Kernel',
+      cmd: 'Core',
       children: [
         {
           label: 'tray.startKernel',
-          cmd: 'Start Kernel',
-          handler: kernelStore.startKernel
+          cmd: 'Start Core',
+          handler: kernelStore.startCore,
         },
         {
           label: 'tray.stopKernel',
-          cmd: 'Stop Kernel',
-          handler: kernelStore.stopKernel
+          cmd: 'Stop Core',
+          handler: kernelStore.stopCore,
         },
         {
           label: 'tray.restartKernel',
-          cmd: 'Restart Kernel',
-          handler: kernelStore.restartKernel
+          cmd: 'Restart Core',
+          handler: kernelStore.restartCore,
         },
         {
           label: 'tray.enableTunMode',
           cmd: 'Enable Tun',
-          handler: async () => {
-            await envStore.clearSystemProxy()
-            await kernelStore.updateConfig('tun', true)
-          }
+          handler: () => kernelStore.updateConfig('tun', { enable: true }),
         },
         {
           label: 'tray.disableTunMode',
           cmd: 'Disable Tun',
-          handler: () => kernelStore.updateConfig('tun', false)
+          handler: () => kernelStore.updateConfig('tun', { enable: false }),
         },
         {
           label: 'kernel.allow-lan',
           cmd: 'Allow Lan',
-          handler: () => kernelStore.updateConfig('allow-lan', true)
+          handler: () => kernelStore.updateConfig('allow-lan', true),
         },
         {
           label: 'kernel.disallow-lan',
           cmd: 'Disallow Lan',
-          handler: () => kernelStore.updateConfig('allow-lan', false)
+          handler: () => kernelStore.updateConfig('allow-lan', false),
         },
         {
           label: 'kernel.mode',
-          cmd: 'Kernel Mode',
-          children: [
-            {
-              label: 'kernel.global',
-              cmd: 'Global',
-              handler: () => handleChangeMode('global')
-            },
-            {
-              label: 'kernel.rule',
-              cmd: 'Rule',
-              handler: () => handleChangeMode('rule')
-            },
-            {
-              label: 'kernel.direct',
-              cmd: 'Direct',
-              handler: () => handleChangeMode('direct')
-            }
-          ]
-        }
-      ]
+          cmd: 'Core Mode',
+          children: ModeOptions.map((mode) => ({
+            label: mode.label,
+            cmd: mode.value,
+            handler: () => handleChangeMode(mode.value),
+          })),
+        },
+      ],
     },
     {
       label: 'tray.proxy',
@@ -123,17 +108,14 @@ export const getCommands = () => {
         {
           label: 'tray.setSystemProxy',
           cmd: 'Set System Proxy',
-          handler: async () => {
-            await kernelStore.updateConfig('tun', false)
-            await envStore.setSystemProxy()
-          }
+          handler: envStore.setSystemProxy,
         },
         {
           label: 'tray.clearSystemProxy',
           cmd: 'Clear System Proxy',
-          handler: envStore.clearSystemProxy
-        }
-      ]
+          handler: envStore.clearSystemProxy,
+        },
+      ],
     },
     {
       label: 'APP',
@@ -144,95 +126,59 @@ export const getCommands = () => {
           cmd: 'Language',
           children: [
             {
-              label: 'settings.lang.zh',
-              cmd: 'Chinese',
-              handler: () => (appSettings.app.lang = Lang.ZH)
+              label: 'settings.lang.load',
+              cmd: 'Load language files',
+              handler: async () => {
+                await appStore.loadLocales()
+                message.success('common.success')
+              },
             },
-            {
-              label: 'settings.lang.en',
-              cmd: 'English',
-              handler: () => (appSettings.app.lang = Lang.EN)
-            }
-          ]
+            ...appStore.locales.map((v) => ({
+              label: v.label,
+              cmd: v.value,
+              handler: () => (appSettings.app.lang = v.value),
+            })),
+          ],
         },
         {
           label: 'settings.theme.name',
           cmd: 'Theme',
-          children: [
-            {
-              label: 'settings.theme.light',
-              cmd: 'Light',
-              handler: () => (appSettings.app.theme = Theme.Light)
-            },
-            {
-              label: 'settings.theme.dark',
-              cmd: 'Dark',
-              handler: () => (appSettings.app.theme = Theme.Dark)
-            },
-            {
-              label: 'settings.theme.auto',
-              cmd: 'Auto',
-              handler: () => (appSettings.app.theme = Theme.Auto)
-            }
-          ]
+          children: ThemeOptions.map((theme) => ({
+            label: theme.label,
+            cmd: theme.value,
+            handler: () => (appSettings.app.theme = theme.value),
+          })),
         },
         {
           label: 'settings.color.name',
           cmd: 'Color',
-          children: [
-            {
-              label: 'settings.color.default',
-              cmd: 'Default',
-              handler: () => (appSettings.app.color = Color.Default)
-            },
-            {
-              label: 'settings.color.orange',
-              cmd: 'Orange',
-              handler: () => (appSettings.app.color = Color.Orange)
-            },
-            {
-              label: 'settings.color.pink',
-              cmd: 'Pink',
-              handler: () => (appSettings.app.color = Color.Pink)
-            },
-            {
-              label: 'settings.color.red',
-              cmd: 'Red',
-              handler: () => (appSettings.app.color = Color.Red)
-            },
-            {
-              label: 'settings.color.skyblue',
-              cmd: 'Skyblue',
-              handler: () => (appSettings.app.color = Color.Skyblue)
-            },
-            {
-              label: 'settings.color.green',
-              cmd: 'Green',
-              handler: () => (appSettings.app.color = Color.Green)
-            }
-          ]
+          children: ColorOptions.map((color) => ({
+            label: color.label,
+            cmd: color.value,
+            handler: () => (appSettings.app.color = color.value),
+          })),
         },
         {
           label: 'titlebar.reload',
           cmd: 'Reload Window',
-          handler: WindowReloadApp
+          handler: reloadApp,
         },
         {
           label: 'tray.restartTip',
           cmd: 'Restart APP',
-          handler: RestartApp
+          handler: RestartApp,
         },
         {
           label: 'tray.exitTip',
           cmd: 'Exit APP',
-          handler: ExitApp
+          handler: exitApp,
         },
         {
           label: 'router.about',
           cmd: 'About APP',
-          handler: () => (appStore.showAbout = true)
-        }
-      ]
+          handler: () => (appStore.showAbout = true),
+        },
+      ],
     },
     {
       label: 'router.subscriptions',
@@ -241,9 +187,9 @@ export const getCommands = () => {
         {
           label: 'common.updateAll',
           cmd: 'Update Subscriptions',
-          handler: subscriptionsStore.updateSubscribes
-        }
-      ]
+          handler: subscriptionsStore.updateSubscribes,
+        },
+      ],
     },
     {
       label: 'router.rulesets',
@@ -252,9 +198,9 @@ export const getCommands = () => {
         {
           label: 'common.updateAll',
           cmd: 'Update Rulesets',
-          handler: rulesetsStore.updateRulesets
-        }
-      ]
+          handler: rulesetsStore.updateRulesets,
+        },
+      ],
     },
     {
       label: 'router.plugins',
@@ -263,11 +209,10 @@ export const getCommands = () => {
         {
           label: 'common.updateAll',
           cmd: 'Update Plugins',
-          handler: pluginsStore.updatePlugins
-        }
-      ]
+          handler: pluginsStore.updatePlugins,
+        },
+      ],
     },
-
     {
       label: 'tray.plugins',
       cmd: 'Plugins',
@@ -288,7 +233,7 @@ export const getCommands = () => {
                 message.error(error)
               }
               plugin.running = false
-            }
+            },
           })
         }
         if (hasMenus) {
@@ -305,13 +250,13 @@ export const getCommands = () => {
                 } finally {
                   plugin.running = false
                 }
-              }
+              },
             })
           })
         }
         return { label: plugin.name, cmd: plugin.id, children }
-      })
-    }
+      }),
+    },
   ]
 
   return processCommands(rawCommands)

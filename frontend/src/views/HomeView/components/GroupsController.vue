@@ -2,11 +2,26 @@
 import { ref, computed, onActivated } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { ProxyGroupType } from '@/constant'
-import { useMessage, usePrompt } from '@/hooks'
-import { ignoredError, sleep, handleUseProxy } from '@/utils'
-import { useAppSettingsStore, useKernelApiStore } from '@/stores'
-import { getGroupDelay, getProxyDelay } from '@/api/kernel'
+import { getProxyDelay } from '@/api/kernel'
+import {
+  ControllerCloseModeOptions,
+  DefaultCardColumns,
+  DefaultConcurrencyLimit,
+  DefaultControllerSensitivity,
+  DefaultTestTimeout,
+  DefaultTestURL,
+} from '@/constant/app'
+import { ControllerCloseMode } from '@/enums/app'
+import { useBool } from '@/hooks'
+import { useAppSettingsStore, useKernelApiStore, useProfilesStore } from '@/stores'
+import {
+  ignoredError,
+  sleep,
+  handleUseProxy,
+  message,
+  createAsyncPool,
+  buildSmartRegExp,
+} from '@/utils'
 
 const expandedSet = ref<Set<string>>(new Set())
 const loadingSet = ref<Set<string>>(new Set())
@@ -15,34 +30,46 @@ const filterKeywordsMap = ref<Record<string, string>>({})
 const loading = ref(false)
 
 const { t } = useI18n()
-const { message } = useMessage()
-const { prompt } = usePrompt()
+const [showMoreSettings, toggleMoreSettings] = useBool(false)
 const appSettings = useAppSettingsStore()
 const kernelApiStore = useKernelApiStore()
+const profilesStore = useProfilesStore()
 
 const groups = computed(() => {
   const { proxies } = kernelApiStore
+  const iconMapping = (profilesStore.currentProfile?.outbounds || []).reduce((p, c) => {
+    p[c.tag] = c.icon
+    return p
+  }, {} as Recordable<string>)
+  const hiddenList = (profilesStore.currentProfile?.outbounds || []).flatMap((v) =>
+    v.hidden ? v.tag : [],
+  )
   return Object.values(proxies)
-    .filter((v) => v.all && v.name !== 'GLOBAL')
+    .filter(
+      (v) =>
+        ['Selector', 'URLTest'].includes(v.type) &&
+        v.name !== 'GLOBAL' &&
+        !hiddenList.includes(v.name),
+    )
     .concat(proxies.GLOBAL || [])
     .map((group) => {
-      const all = group.all
+      const all = (group.all || [])
         .filter((proxy) => {
-          const history = proxies[proxy].history || []
-          const alive = history[history.length - 1]?.delay > 0
+          const history = proxies[proxy]?.history || []
+          const alive = (history[history.length - 1]?.delay ?? 0) > 0
           const condition1 =
             appSettings.app.kernel.unAvailable ||
             ['direct', 'block'].includes(proxy) ||
-            proxies[proxy].all ||
+            proxies[proxy]?.all ||
             alive
           const keywords = filterKeywordsMap.value[group.name]
-          const condition2 = keywords ? new RegExp(keywords, 'i').test(proxy) : true
+          const condition2 = keywords ? buildSmartRegExp(keywords, 'i').test(proxy) : true
           return condition1 && condition2
         })
         .map((proxy) => {
-          const history = proxies[proxy].history || []
+          const history = proxies[proxy]?.history || []
           const delay = history[history.length - 1]?.delay || 0
-          return { ...proxies[proxy], delay }
+          return { ...proxies[proxy]!, delay }
         })
         .sort((a, b) => {
           if (!appSettings.app.kernel.sortByDelay || a.delay === b.delay) return 0
@@ -57,7 +84,7 @@ const groups = computed(() => {
         tmp.now && chains.push(tmp.now)
         tmp = proxies[tmp.now]
       }
-      return { ...group, all, chains }
+      return { ...group, all, chains, icon: iconMapping[group.name] }
     })
 })
 
@@ -73,21 +100,6 @@ const toggleExpanded = (group: string) => {
   }
 }
 
-const handleFilter = async (group: string) => {
-  const keywords =
-    (await ignoredError(prompt<string>, 'Tips', filterKeywordsMap.value[group], {
-      placeholder: 'keywords'
-    })) || ''
-  try {
-    new RegExp(keywords, 'i')
-  } catch (error) {
-    message.error('Incorrect regular expression')
-    await handleFilter(group)
-    return
-  }
-  filterKeywordsMap.value[group] = keywords
-}
-
 const expandAll = () => groups.value.forEach(({ name }) => expandedSet.value.add(name))
 
 const collapseAll = () => expandedSet.value.clear()
@@ -99,59 +111,84 @@ const isLoading = (group: string) => loadingSet.value.has(group)
 const isFiltered = (group: string) => filterKeywordsMap.value[group]
 
 const handleGroupDelay = async (group: string) => {
-  loadingSet.value.add(group)
-  try {
-    await getGroupDelay(
-      group,
-      appSettings.app.kernel.testUrl || 'https://www.gstatic.com/generate_204'
+  const _group = kernelApiStore.proxies[group]
+  if (_group) {
+    let index = 0
+    let success = 0
+    let failure = 0
+
+    const delayTest = async (proxy: string) => {
+      index += 1
+      update(`Testing... ${index} / ${_group.all.length}, success: ${success} failure: ${failure}`)
+      const _proxy = kernelApiStore.proxies[proxy]
+      try {
+        loadingSet.value.add(proxy)
+        const { delay = 0 } = await getProxyDelay(
+          encodeURIComponent(proxy),
+          appSettings.app.kernel.testUrl || DefaultTestURL,
+          appSettings.app.kernel.testTimeout || DefaultTestTimeout,
+        )
+        success += 1
+        _proxy && _proxy.history.push({ delay })
+      } catch {
+        failure += 1
+        _proxy && _proxy.history.push({ delay: 0 })
+      }
+      update(`Testing... ${index} / ${_group.all.length}, success: ${success} failure: ${failure}`)
+      loadingSet.value.delete(proxy)
+    }
+
+    loadingSet.value.add(group)
+    const { run, controller } = createAsyncPool(
+      appSettings.app.kernel.concurrencyLimit || DefaultConcurrencyLimit,
+      _group.all,
+      delayTest,
     )
-    await kernelApiStore.refreshProviderProxies()
-  } catch (error: any) {
-    message.error(error)
+    const {
+      update,
+      destroy,
+      success: msgSuccess,
+    } = message.info('Testing...', 99999, () => {
+      controller.cancel()
+      message.warn('common.canceled')
+    })
+    await run()
+    loadingSet.value.delete(group)
+    msgSuccess(
+      `Completed. ${index} / ${_group.all.length}, success: ${success} failure: ${failure}`,
+    )
+    await sleep(3000)
+    destroy()
   }
-  loadingSet.value.delete(group)
 }
 
 const handleProxyDelay = async (proxy: string) => {
+  loadingSet.value.add(proxy)
   try {
-    const { delay } = await getProxyDelay(
-      proxy,
-      appSettings.app.kernel.testUrl || 'https://www.gstatic.com/generate_204'
+    const { delay = 0 } = await getProxyDelay(
+      encodeURIComponent(proxy),
+      appSettings.app.kernel.testUrl || DefaultTestURL,
+      appSettings.app.kernel.testTimeout || DefaultTestTimeout,
     )
     const _proxy = kernelApiStore.proxies[proxy]
-    _proxy.history.push({ delay })
+    _proxy && _proxy.history.push({ delay })
   } catch (error: any) {
-    message.error(error)
+    message.error(error + ': ' + proxy)
   }
+  loadingSet.value.delete(proxy)
 }
 
 const handleRefresh = async () => {
   loading.value = true
   await ignoredError(kernelApiStore.refreshConfig)
   await ignoredError(kernelApiStore.refreshProviderProxies)
-  await sleep(500)
+  await sleep(100)
   loading.value = false
-}
-
-const handleChangeTestUrl = async () => {
-  try {
-    const url = await prompt<string>(
-      'home.controller.delayUrl',
-      appSettings.app.kernel.testUrl || 'https://www.gstatic.com/generate_204',
-      {
-        placeholder: 'https://www.gstatic.com/generate_204'
-      }
-    )
-    appSettings.app.kernel.testUrl = url
-    message.success('common.success')
-  } catch (error: any) {
-    message.info(error)
-  }
 }
 
 const locateGroup = (group: any, chain: string) => {
   collapseAll()
-  if (kernelApiStore.proxies[chain].all) {
+  if (kernelApiStore.proxies[chain]?.all) {
     toggleExpanded(kernelApiStore.proxies[chain].name)
   } else {
     toggleExpanded(group.name)
@@ -166,127 +203,226 @@ const delayColor = (delay = 0) => {
   return 'var(--level-4-color)'
 }
 
+const handleResetMoreSettings = () => {
+  appSettings.app.kernel.testUrl = DefaultTestURL
+  appSettings.app.kernel.testTimeout = DefaultTestTimeout
+  appSettings.app.kernel.concurrencyLimit = DefaultConcurrencyLimit
+  appSettings.app.kernel.controllerCloseMode = ControllerCloseMode.All
+  appSettings.app.kernel.controllerSensitivity = DefaultControllerSensitivity
+  appSettings.app.kernel.cardColumns = DefaultCardColumns
+  message.success('common.success')
+}
+
 onActivated(() => {
   kernelApiStore.refreshProviderProxies()
 })
 </script>
 
 <template>
-  <div class="groups" style="margin-top: 0">
-    <div class="header">
-      <Switch v-model="appSettings.app.kernel.autoClose">
-        {{ t('home.controller.autoClose') }}
-      </Switch>
-      <Switch v-model="appSettings.app.kernel.unAvailable" class="ml-8">
-        {{ t('home.controller.unAvailable') }}
-      </Switch>
-      <Switch v-model="appSettings.app.kernel.cardMode" class="ml-8">
-        {{ t('home.controller.cardMode') }}
-      </Switch>
-      <Switch v-model="appSettings.app.kernel.sortByDelay" class="ml-8">
-        {{ t('home.controller.sortBy') }}
-      </Switch>
-      <Button @click="handleChangeTestUrl" type="primary" size="small" class="ml-8">
-        {{ t('home.controller.delay') }}
-      </Button>
-      <Button @click="expandAll" v-tips="'home.overview.expandAll'" type="text" class="ml-auto">
-        <Icon icon="expand" />
-      </Button>
-      <Button @click="collapseAll" v-tips="'home.overview.collapseAll'" type="text">
-        <Icon icon="collapse" />
-      </Button>
-      <Button
-        @click="handleRefresh"
-        v-tips="'home.overview.refresh'"
-        :loading="loading"
-        icon="refresh"
-        type="text"
-      />
+  <div class="m-8 mt-0 sticky top-0 z-3">
+    <div
+      class="sticky flex gap-8 items-center p-8 rounded-8 backdrop-blur-sm"
+      style="background-color: var(--card-bg)"
+    >
+      <Switch v-model="appSettings.app.kernel.autoClose" label="home.controller.autoClose" />
+      <Switch v-model="appSettings.app.kernel.unAvailable" label="home.controller.unAvailable" />
+      <Switch v-model="appSettings.app.kernel.cardMode" label="home.controller.cardMode" />
+      <Switch v-model="appSettings.app.kernel.sortByDelay" label="home.controller.sortBy" />
+      <Button type="primary" size="small" @click="toggleMoreSettings"> ... </Button>
+      <div class="ml-auto flex items-center">
+        <Button v-tips="'home.overview.expandAll'" type="text" icon="expand" @click="expandAll" />
+        <Button
+          v-tips="'home.overview.collapseAll'"
+          type="text"
+          icon="collapse"
+          @click="collapseAll"
+        />
+        <Button
+          v-tips="'home.overview.refresh'"
+          :loading="loading"
+          icon="refresh"
+          type="text"
+          @click="handleRefresh"
+        />
+      </div>
     </div>
   </div>
-  <div v-for="group in groups" :key="group.name" class="groups">
-    <div class="header" @click="toggleExpanded(group.name)">
-      <div class="group-info">
-        <span class="group-name">{{ group.name }}</span>
-        <span class="group-type">
-          {{
-            t(
-              {
-                [ProxyGroupType.Selector]: 'kernel.proxyGroups.type.Selector',
-                [ProxyGroupType.UrlTest]: 'kernel.proxyGroups.type.UrlTest',
-                [ProxyGroupType.Fallback]: 'kernel.proxyGroups.type.Fallback'
-              }[group.type]!
-            )
-          }}
+  <div v-for="group in groups" :key="group.name" class="m-8">
+    <div
+      class="sticky z-2 flex gap-8 items-center p-8 rounded-8 backdrop-blur-sm"
+      style="top: 52px; background-color: var(--card-bg)"
+      @click="toggleExpanded(group.name)"
+    >
+      <div class="text-14 flex items-center gap-2 text-nowrap overflow-hidden">
+        <img v-if="group.icon" :src="group.icon" class="w-24 h-24 mr-4" draggable="false" />
+        <span class="font-bold text-18">{{ group.name }}</span>
+        <span class="mx-8">
+          {{ group.type }}
         </span>
         <span> :: </span>
         <template v-for="(chain, index) in group.chains" :key="chain">
           <span v-if="index !== 0" style="color: gray"> / </span>
-          <Button @click.stop="locateGroup(group, chain)" type="text" size="small">
+          <Button type="text" size="small" @click.stop="locateGroup(group, chain)">
             {{ chain }}
           </Button>
         </template>
       </div>
-      <div class="action">
+      <div class="ml-auto flex items-center" @click.stop>
+        <Input
+          v-model="filterKeywordsMap[group.name]"
+          :placeholder="t('common.keywords')"
+          editable
+          clearable
+        >
+          <template #editable>
+            <Button
+              type="text"
+              icon="filter"
+              :icon-color="isFiltered(group.name) ? 'var(--primary-color)' : ''"
+            />
+          </template>
+        </Input>
         <Button
-          @click.stop="handleFilter(group.name)"
-          type="text"
-          icon="filter"
-          :icon-color="isFiltered(group.name) ? 'var(--primary-color)' : ''"
-        />
-        <Button
-          @click.stop="handleGroupDelay(group.name)"
           v-tips="'home.overview.delayTest'"
           :loading="isLoading(group.name)"
           icon="speedTest"
           type="text"
+          @click="handleGroupDelay(group.name)"
         />
-        <Button @click.stop="toggleExpanded(group.name)" type="text">
+        <Button type="text" @click="toggleExpanded(group.name)">
           <Icon
-            :class="{ 'rotate-z': isExpanded(group.name) }"
+            :class="{ 'action-expand-expanded': isExpanded(group.name) }"
+            class="action-expand origin-center duration-200"
             icon="arrowDown"
-            class="action-expand"
           />
         </Button>
       </div>
     </div>
     <Transition name="expand">
-      <div v-if="isExpanded(group.name)" class="body">
+      <div v-if="isExpanded(group.name)" class="py-8 px-4">
         <Empty v-if="group.all.length === 0" />
-        <template v-else-if="appSettings.app.kernel.cardMode">
+        <div
+          v-else-if="appSettings.app.kernel.cardMode"
+          :class="`grid-cols-${appSettings.app.kernel.cardColumns}`"
+          class="grid gap-8"
+        >
           <Card
             v-for="proxy in group.all"
+            :key="proxy.name"
             :title="proxy.name"
             :selected="proxy.name === group.now"
-            :key="proxy.name"
+            class="cursor-pointer"
             @click="useProxyWithCatchError(group, proxy)"
-            class="proxy"
           >
             <Button
-              @click.stop="handleProxyDelay(proxy.name)"
               :style="{ color: delayColor(proxy.delay) }"
+              :loading="isLoading(proxy.name)"
               type="text"
-              class="delay"
+              size="small"
+              style="margin-left: -2px; padding-left: 2px"
+              @click.stop="handleProxyDelay(proxy.name)"
             >
-              {{ proxy.delay && proxy.delay + 'ms' }}
+              <div class="text-12">
+                {{ proxy.delay && proxy.delay + 'ms' }}
+              </div>
             </Button>
-            <div class="type">{{ proxy.type }} {{ proxy.udp ? ':: udp' : '' }}</div>
+            <div class="text-12 my-2">{{ proxy.type }} {{ proxy.udp ? ':: udp' : '' }}</div>
           </Card>
-        </template>
-        <template v-else>
+        </div>
+        <div v-else class="grid grid-cols-32 gap-8">
           <div
             v-for="proxy in group.all"
-            v-tips.fast="proxy.name"
-            @click="useProxyWithCatchError(group, proxy)"
             :key="proxy.name"
+            v-tips.fast="proxy.name"
             :style="{ background: delayColor(proxy.delay) }"
-            :class="{ selected: proxy.name === group.now }"
-            class="proxy-square"
-          ></div>
-        </template>
+            :class="proxy.name === group.now ? 'rounded-full shadow' : ''"
+            class="w-12 h-12 rounded-4 flex items-center justify-center"
+            @click="useProxyWithCatchError(group, proxy)"
+          >
+            <Icon v-if="isLoading(proxy.name)" icon="loading" :size="12" class="rotation" />
+          </div>
+        </div>
       </div>
     </Transition>
   </div>
+
+  <Modal
+    v-model:open="showMoreSettings"
+    :submit="false"
+    mask-closable
+    cancel-text="common.close"
+    title="common.more"
+  >
+    <template #action>
+      <Button type="text" class="mr-auto" @click="handleResetMoreSettings">
+        {{ t('common.reset') }}
+      </Button>
+    </template>
+
+    <div class="form-item">
+      {{ t('home.controller.delay') }}
+      <Input
+        v-model="appSettings.app.kernel.testUrl"
+        :placeholder="DefaultTestURL"
+        editable
+        clearable
+      />
+    </div>
+
+    <div class="form-item">
+      {{ t('home.controller.timeout') }}
+      <Input
+        v-model="appSettings.app.kernel.testTimeout"
+        :placeholder="String(DefaultTestTimeout)"
+        type="number"
+        editable
+        clearable
+      />
+    </div>
+
+    <div class="form-item">
+      {{ t('home.controller.concurrencyLimit') }}
+      <Input
+        v-model="appSettings.app.kernel.concurrencyLimit"
+        :min="1"
+        :max="50"
+        type="number"
+        editable
+        clearable
+      />
+    </div>
+
+    <div class="form-item">
+      {{ t('home.controller.closeMode.name') }}
+      <Radio
+        v-model="appSettings.app.kernel.controllerCloseMode"
+        :options="ControllerCloseModeOptions"
+      />
+    </div>
+
+    <div
+      v-if="appSettings.app.kernel.controllerCloseMode === ControllerCloseMode.All"
+      class="form-item"
+    >
+      {{ t('home.controller.sensitivity') }}
+      <Input
+        v-model="appSettings.app.kernel.controllerSensitivity"
+        type="number"
+        :min="1"
+        :max="6"
+        placeholder="1-6"
+        editable
+      />
+    </div>
+
+    <div class="form-item">
+      {{ t('home.controller.cardColumns') }}
+      <Radio
+        v-model="appSettings.app.kernel.cardColumns"
+        :options="Array.from({ length: 5 }, (_, i) => ({ label: String(i + 1), value: i + 1 }))"
+      />
+    </div>
+  </Modal>
 </template>
 
 <style lang="less" scoped>
@@ -303,77 +439,10 @@ onActivated(() => {
   transform: scaleY(0);
 }
 
-.groups {
-  margin: 8px;
-
-  .header {
-    position: sticky;
-    z-index: 1;
-    top: 0;
-    display: flex;
-    align-items: center;
-    padding: 8px;
-    background-color: var(--card-bg);
-    border-radius: 8px;
-    backdrop-filter: blur(2px);
-    .group-info {
-      font-size: 14px;
-      display: flex;
-      align-items: center;
-      .group-name {
-        font-weight: bold;
-        font-size: 18px;
-      }
-
-      .group-type {
-        margin: 0 8px;
-      }
-    }
-
-    .action {
-      margin-left: auto;
-
-      .rotate-z {
-        transform: rotateZ(0deg);
-      }
-      &-expand {
-        transform: rotateZ(-90deg);
-        transition: all 0.2s;
-      }
-    }
-  }
-
-  .body {
-    display: flex;
-    flex-wrap: wrap;
-    margin-top: 4px;
-    .proxy {
-      cursor: pointer;
-      width: calc(20% - 8px);
-      margin: 4px 4px;
-      .delay {
-        height: 20px;
-        margin-left: -4px;
-        padding-left: 4px;
-      }
-      .type,
-      .delay {
-        font-size: 12px;
-      }
-    }
-
-    .proxy-square {
-      width: 12px;
-      height: 12px;
-      margin: 4px;
-      border-radius: 4px;
-    }
-
-    .selected {
-      border-radius: 12px;
-      border: 2px solid var(--primary-color);
-      box-shadow: 0 0 4px var(--secondary-color);
-    }
+.action-expand {
+  transform: rotate(-90deg);
+  &-expanded {
+    transform: rotate(0deg);
   }
 }
 </style>

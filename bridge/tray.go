@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"embed"
 	"log"
 	"os"
 
@@ -9,61 +8,46 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-func InitTray(a *App, icon []byte, fs embed.FS) (trayStart, trayEnd func()) {
-	src := "frontend/dist/icons/"
-	dst := "data/.cache/icons/"
-
-	icons := []string{
-		"tray_normal_light.ico",
-		"tray_normal_dark.ico",
-		"tray_proxy_light.ico",
-		"tray_proxy_dark.ico",
-		"tray_tun_light.ico",
-		"tray_tun_dark.ico",
-	}
-
-	os.MkdirAll(GetPath(dst), os.ModePerm)
-
-	for _, icon := range icons {
-		path := GetPath(dst + icon)
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			log.Printf("InitTray [Icon]: %s", src+icon)
-			b, _ := fs.ReadFile(src + icon)
-			os.WriteFile(path, b, os.ModePerm)
-		}
-	}
-
-	isDarwin := Env.OS == "darwin"
-
+func CreateTray(a *App, icon []byte) (trayStart, trayEnd func()) {
 	return systray.RunWithExternalLoop(func() {
-		systray.SetIcon([]byte(icon))
+		systray.SetIcon(icon)
 		systray.SetTooltip("GUI.for.Cores")
+
 		systray.SetOnRClick(func(menu systray.IMenu) { menu.ShowMenu() })
-		if isDarwin {
-			systray.SetOnClick(func(menu systray.IMenu) { menu.ShowMenu() })
-		} else {
-			systray.SetTitle("GUI.for.Cores")
-			systray.SetOnClick(func(menu systray.IMenu) { a.ShowMainWindow() })
+		systray.SetOnClick(func(menu systray.IMenu) {
+			if Env.OS == "darwin" {
+				menu.ShowMenu()
+			} else {
+				a.ShowMainWindow()
+			}
+		})
+
+		addClickMenuItem := func(title, tooltip string, action func()) {
+			m := systray.AddMenuItem(title, tooltip)
+			m.Click(action)
 		}
 
 		// Ensure the tray is still available if rolling-release fails
-		mShowWindow := systray.AddMenuItem("Show Main Window", "Show Main Window")
-		mRestart := systray.AddMenuItem("Restart", "Restart")
-		mExit := systray.AddMenuItem("Exit", "Exit")
-		mShowWindow.Click(func() { a.ShowMainWindow() })
-		mRestart.Click(func() { a.RestartApp() })
-		mExit.Click(func() { a.ExitApp() })
+		addClickMenuItem("Show", "Show", func() { a.ShowMainWindow() })
+		addClickMenuItem("Restart", "Restart", func() { a.RestartApp() })
+		addClickMenuItem("Exit", "Exit", func() { a.ExitApp() })
 	}, nil)
+}
+
+func (a *App) UpdateTray(tray TrayContent) {
+	log.Printf("UpdateTray")
+	updateTray(a, tray)
 }
 
 func (a *App) UpdateTrayMenus(menus []MenuItem) {
 	log.Printf("UpdateTrayMenus")
+	updateTrayMenus(a, menus)
+}
 
-	systray.ResetMenu()
-
-	for _, menu := range menus {
-		createMenuItem(menu, a, nil)
-	}
+func (a *App) UpdateTrayAndMenus(tray TrayContent, menus []MenuItem) {
+	log.Printf("UpdateTrayAndMenus")
+	updateTrayMenus(a, menus)
+	updateTray(a, tray)
 }
 
 func createMenuItem(menu MenuItem, a *App, parent *systray.MenuItem) {
@@ -73,15 +57,24 @@ func createMenuItem(menu MenuItem, a *App, parent *systray.MenuItem) {
 	switch menu.Type {
 	case "item":
 		var m *systray.MenuItem
+		checkable := Env.OS == "linux" && (menu.Checkable || menu.Checked)
 		if parent == nil {
-			m = systray.AddMenuItem(menu.Text, menu.Tooltip)
+			if checkable {
+				m = systray.AddMenuItemCheckbox(menu.Text, menu.Tooltip, menu.Checked)
+			} else {
+				m = systray.AddMenuItem(menu.Text, menu.Tooltip)
+			}
 		} else {
-			m = parent.AddSubMenuItem(menu.Text, menu.Tooltip)
+			if checkable {
+				m = parent.AddSubMenuItemCheckbox(menu.Text, menu.Tooltip, menu.Checked)
+			} else {
+				m = parent.AddSubMenuItem(menu.Text, menu.Tooltip)
+			}
 		}
 
-		m.Click(func() { go runtime.EventsEmit(a.Ctx, menu.Event) })
+		m.Click(func() { go runtime.EventsEmit(a.Ctx, "onMenuItemClick", menu.Event) })
 
-		if menu.Checked {
+		if menu.Checked && !checkable {
 			m.Check()
 		}
 
@@ -93,9 +86,9 @@ func createMenuItem(menu MenuItem, a *App, parent *systray.MenuItem) {
 	}
 }
 
-func (a *App) UpdateTray(tray TrayContent) {
+func updateTray(a *App, tray TrayContent) {
 	if tray.Icon != "" {
-		ico, err := os.ReadFile(GetPath(tray.Icon))
+		ico, err := os.ReadFile(resolvePath(tray.Icon))
 		if err == nil {
 			systray.SetIcon(ico)
 		}
@@ -109,8 +102,10 @@ func (a *App) UpdateTray(tray TrayContent) {
 	}
 }
 
-func (a *App) ExitApp() {
-	systray.Quit()
-	runtime.Quit(a.Ctx)
-	os.Exit(0)
+func updateTrayMenus(a *App, menus []MenuItem) {
+	systray.ResetMenu()
+
+	for _, menu := range menus {
+		createMenuItem(menu, a, nil)
+	}
 }

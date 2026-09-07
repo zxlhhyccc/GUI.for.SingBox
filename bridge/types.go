@@ -3,42 +3,78 @@ package bridge
 import (
 	"context"
 	"net/http"
+
+	"github.com/wailsapp/wails/v2/pkg/menu"
 )
 
 // App struct
 type App struct {
-	Ctx context.Context
+	Ctx     context.Context
+	AppMenu *menu.Menu
 }
 
 type EnvResult struct {
-	FromTaskSch bool   `json:"-"`
-	AppName     string `json:"appName"`
-	BasePath    string `json:"basePath"`
-	OS          string `json:"os"`
-	ARCH        string `json:"arch"`
-	X64Level    int    `json:"x64Level"`
+	IsStartup    bool   `json:"-"`
+	PreventExit  bool   `json:"-"`
+	FromTaskSch  bool   `json:"-"`
+	WebviewPath  string `json:"-"`
+	AppName      string `json:"appName"`
+	AppVersion   string `json:"appVersion"`
+	BasePath     string `json:"basePath"`
+	OS           string `json:"os"`
+	ARCH         string `json:"arch"`
+	IsPrivileged bool   `json:"isPrivileged"`
 }
 
 type RequestOptions struct {
 	Proxy     string
 	Insecure  bool
+	Redirect  bool
 	Timeout   int
 	CancelId  string
 	FileField string
+	Sha256    string
+	Stream    string
 }
 
 type ExecOptions struct {
-	Convert bool              `json:"convert"`
-	Env     map[string]string `json:"env"`
+	PidFile           string
+	LogFile           string
+	StopOutputKeyword string
+	WorkingDirectory  string
+	Env               map[string]string
+}
+
+type Range struct {
+	Start *int64
+	End   *int64
 }
 
 type IOOptions struct {
-	Mode string // Binary / Text
+	Mode  string // Binary / Text
+	Range string // "start-end" / "start-" / "-end"
 }
 
 type FlagResult struct {
 	Flag bool   `json:"flag"`
 	Data string `json:"data"`
+}
+
+type ServerOptions struct {
+	Cert          string
+	Key           string
+	StaticPath    string
+	StaticRoute   string
+	StaticHeaders map[string]string
+	UploadPath    string
+	UploadRoute   string
+	UploadHeaders map[string]string
+	MaxUploadSize int64
+}
+
+type NetOptions struct {
+	Mode    string // Binary / Text
+	Timeout int
 }
 
 type HTTPResult struct {
@@ -49,33 +85,38 @@ type HTTPResult struct {
 }
 
 type AppConfig struct {
-	WindowStartState int  `yaml:"windowStartState"`
-	Width            int  `yaml:"width"`
-	Height           int  `yaml:"height"`
-	MultipleInstance bool `yaml:"multipleInstance"`
-	RollingRelease   bool `yaml:"rollingRelease"`
-	StartHidden      bool
+	WindowStartState  int  `yaml:"windowStartState"`
+	WebviewGpuPolicy  int  `yaml:"webviewGpuPolicy"`
+	ContentProtection bool `yaml:"contentProtection"`
+	Width             int  `yaml:"width"`
+	Height            int  `yaml:"height"`
+	MultipleInstance  bool `yaml:"multipleInstance"`
+	RollingRelease    bool `yaml:"rollingRelease" default:"true"`
+	StartHidden       bool
 }
 
 type TrayContent struct {
-	Icon    string `json:"icon"`
-	Title   string `json:"title"`
-	Tooltip string `json:"tooltip"`
+	Icon    string `json:"icon,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Tooltip string `json:"tooltip,omitempty"`
 }
 
 type WriteTracker struct {
 	Total          int64
 	Progress       int64
+	LastEmitted    int64
+	EmitThreshold  int64
 	ProgressChange string
 	App            *App
 }
 
 type MenuItem struct {
-	Type     string     `json:"type"` // Menu Type: item / separator
-	Text     string     `json:"text"`
-	Tooltip  string     `json:"tooltip"`
-	Event    string     `json:"event"`
-	Children []MenuItem `json:"children"`
-	Hidden   bool       `json:"hidden"`
-	Checked  bool       `json:"checked"`
+	Type      string     `json:"type"` // Menu Type: item / separator
+	Text      string     `json:"text"`
+	Tooltip   string     `json:"tooltip"`
+	Event     string     `json:"event"`
+	Children  []MenuItem `json:"children"`
+	Hidden    bool       `json:"hidden"`
+	Checked   bool       `json:"checked"`
+	Checkable bool       `json:"checkable"`
 }

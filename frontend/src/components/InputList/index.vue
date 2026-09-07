@@ -1,59 +1,138 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, useTemplateRef, watch } from 'vue'
 
-import { DraggableOptions } from '@/constant'
+import { DraggableOptions } from '@/constant/app'
+import { sampleID } from '@/utils'
+
+import Input from '@/components/Input/index.vue'
 
 interface Props {
+  modelValue?: string[]
   placeholder?: string
   autofocus?: boolean
 }
 
-withDefaults(defineProps<Props>(), { autofocus: true })
+interface Item {
+  value: string
+  id: string
+}
 
-const list = defineModel<string[]>({ default: [] })
+const props = withDefaults(defineProps<Props>(), {
+  modelValue: () => [],
+  placeholder: '',
+  autofocus: false,
+})
 
-const value = ref('')
-const inputRef = ref()
+const emit = defineEmits(['change', 'update:modelValue'])
+
+const innerList = ref<Item[]>(props.modelValue.map((v, i) => ({ value: v, id: i.toString() })))
+
+const editItem = ref<Item>()
+const inputVal = ref('')
+const inputRef = useTemplateRef<typeof Input>('inputRef')
 
 const handleAdd = () => {
-  if (!value.value) return
-  list.value.push(value.value)
-  value.value = ''
+  const item = editItem.value
+  editItem.value = undefined
+  if (!inputVal.value) return
+  if (item) {
+    item.value = inputVal.value
+  } else {
+    innerList.value.push({ value: inputVal.value, id: sampleID() })
+  }
+  inputVal.value = ''
+  inputRef.value?.focus()
+  emitUpdate()
+}
+
+const handleEdit = (item: Item) => {
+  editItem.value = item
+  inputVal.value = editItem.value.value
   inputRef.value?.focus()
 }
 
-const handleDel = (i: number) => list.value.splice(i, 1)
+const handleDel = (item: Item) => {
+  const idx = innerList.value.indexOf(item)
+  if (idx !== -1) {
+    innerList.value.splice(idx, 1)
+    emitUpdate()
+  }
+}
+
+let internalUpdate = false
+
+watch(
+  () => props.modelValue,
+  (val) => {
+    if (!internalUpdate) {
+      innerList.value.splice(0)
+      innerList.value.push(...val.map((v, i) => ({ value: v, id: i.toString() })))
+    }
+    internalUpdate = false
+  },
+  {
+    deep: true,
+  },
+)
+
+const emitUpdate = () => {
+  internalUpdate = true
+  const list = innerList.value.map((v) => v.value)
+  emit('update:modelValue', list)
+  emit('change', list)
+}
 </script>
 
 <template>
-  <div class="input-list">
-    <div v-draggable="[list, DraggableOptions]">
+  <div class="gui-input-list inline-block rounded-4">
+    <div
+      v-draggable="[innerList, { ...DraggableOptions, onUpdate: emitUpdate }]"
+      class="flex flex-col gap-2"
+    >
       <TransitionGroup name="list">
-        <Card v-for="(l, i) in list" :key="l" class="list-item">
-          <div>{{ l }}</div>
-          <Button @click="handleDel(i)" icon="close" :icon-size="10" type="text" />
+        <Card v-for="item in innerList" :key="item.id">
+          <div class="flex items-center py-4 break-all">
+            <span class="mr-auto">{{ item.value }}</span>
+            <Button
+              icon="edit"
+              :icon-size="14"
+              size="small"
+              type="text"
+              @click="handleEdit(item)"
+            />
+            <Button
+              icon="close"
+              :icon-size="14"
+              size="small"
+              type="text"
+              @click="handleDel(item)"
+            />
+          </div>
         </Card>
       </TransitionGroup>
     </div>
 
     <Input
       ref="inputRef"
-      v-model="value"
+      v-model="inputVal"
       :placeholder="placeholder"
-      @keydown.enter="handleAdd"
       type="text"
-      auto-size
+      clearable
       :autofocus="autofocus"
-      class="mt-4"
+      class="mt-4 w-full"
+      @keydown.enter="handleAdd"
     >
-      <template #extra>
-        <Button @click="handleAdd" icon="add" size="small" type="primary" />
+      <template #suffix>
+        <Button :icon="editItem ? 'edit' : 'add'" size="small" type="primary" @click="handleAdd" />
       </template>
     </Input>
   </div>
 </template>
 
 <style lang="less" scoped>
+.gui-input-list {
+  min-width: 220px;
+}
 .list-enter-active,
 .list-leave-active {
   transition: all 0.2s ease;
@@ -62,19 +141,5 @@ const handleDel = (i: number) => list.value.splice(i, 1)
 .list-leave-to {
   opacity: 0;
   transform: scale(0);
-}
-
-.input-list {
-  display: inline-block;
-  border-radius: 4px;
-
-  .list-item {
-    display: flex;
-    padding: 0 0 0 8px;
-    align-items: center;
-    justify-content: space-between;
-    font-size: 14px;
-    margin: 0 0 2px 0;
-  }
 }
 </style>

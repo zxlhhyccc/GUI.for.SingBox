@@ -1,6 +1,6 @@
 <script lang="ts" setup>
+import { ref, watch, nextTick, useTemplateRef } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ref, watch, nextTick } from 'vue'
 
 interface Props {
   position: { x: number; y: number }
@@ -8,12 +8,12 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  message: ''
+  message: '',
 })
 
 const model = defineModel<boolean>()
 
-const domRef = ref<HTMLElement>()
+const domRef = useTemplateRef('domRef')
 const fixedPosition = ref({ x: 0, y: 0 })
 
 const { t } = useI18n()
@@ -31,34 +31,23 @@ watch(
         fixedPosition.value = { x, y }
       }
     })
-  }
+  },
 )
 </script>
 
 <template>
   <div
     v-show="model"
-    :style="{ left: fixedPosition.x + 'px', top: fixedPosition.y + 'px' }"
     ref="domRef"
-    class="tips"
+    :style="{ left: fixedPosition.x + 'px', top: fixedPosition.y + 'px' }"
+    class="gui-tips fixed z-9999 duration-100 pointer-events-none shadow whitespace-pre-wrap text-center text-12 p-4 rounded-8 min-w-64 backdrop-blur-sm"
   >
     {{ t(message) }}
   </div>
 </template>
 
 <style lang="less" scoped>
-.tips {
-  transition: all 0.1s;
-  pointer-events: none;
-  position: fixed;
-  z-index: 9999;
+.gui-tips {
   background: var(--menu-bg);
-  padding: 4px;
-  border-radius: 4px;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-  min-width: 90px;
-  text-align: center;
-  font-size: 12px;
-  white-space: pre-wrap;
 }
 </style>

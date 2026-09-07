@@ -1,94 +1,73 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, useTemplateRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { APP_TITLE, sleep } from '@/utils'
-import { useMessage, useBool } from '@/hooks'
-import { useAppSettingsStore, useProfilesStore, useKernelApiStore, useEnvStore } from '@/stores'
+import logo from '@/assets/logo'
+import { ControllerCloseMode } from '@/enums/app'
+import { useAppSettingsStore, useProfilesStore, useKernelApiStore } from '@/stores'
+import { APP_TITLE, debounce, message, modal } from '@/utils'
 
-import QuickStart from './components/QuickStart.vue'
-import OverView from './components/OverView.vue'
-import KernelLogs from './components/KernelLogs.vue'
-import LogsController from './components/LogsController.vue'
 import GroupsController from './components/GroupsController.vue'
-import CommonController from './components/CommonController.vue'
+import KernelLogs from './components/KernelLogs.vue'
+import OverView from './components/OverView.vue'
+import QuickStart from './components/QuickStart.vue'
 
-const kernelLoading = ref(false)
 const showController = ref(false)
-const controllerRef = ref<HTMLElement>()
+const controllerRef = useTemplateRef('controllerRef')
 
 const { t } = useI18n()
-const { message } = useMessage()
-const [showApiLogs, toggleApiLogs] = useBool(false)
-const [showKernelLogs, toggleKernelLogs] = useBool(false)
-const [showSettings, toggleSettingsModal] = useBool(false)
-const [showQuickStart, toggleQuickStart] = useBool(false)
 
 const appSettingsStore = useAppSettingsStore()
 const profilesStore = useProfilesStore()
 const kernelApiStore = useKernelApiStore()
-const envStore = useEnvStore()
 
 const handleStartKernel = async () => {
-  kernelLoading.value = true
-
   try {
-    await kernelApiStore.startKernel()
+    await kernelApiStore.startCore()
   } catch (error: any) {
     console.error(error)
-    message.error(error)
-    kernelLoading.value = false
-  }
-
-  await sleep(4000)
-
-  kernelLoading.value = false
-}
-
-const handleRestartKernel = async () => {
-  try {
-    await kernelApiStore.restartKernel()
-  } catch (error: any) {
-    console.error(error)
-    message.error(error)
+    message.error(error.message || error)
   }
 }
 
-const handleStopKernel = async () => {
-  try {
-    await kernelApiStore.stopKernel()
-  } catch (error: any) {
-    console.error(error)
-    message.error(error)
-  }
+const handleShowQuickStart = () => {
+  modal({ title: 'subscribes.enterLink' }).setContent(QuickStart).open()
 }
+
+const handleShowKernelLogs = () => {
+  const m = modal({
+    title: 'home.overview.viewlog',
+    width: '90',
+    height: '90',
+    submit: false,
+    cancelText: 'common.close',
+    maskClosable: true,
+  })
+  m.setContent(KernelLogs).open()
+}
+
+let scrollEventCount = 0
+const resetScrollEventCount = debounce(() => (scrollEventCount = 0), 100)
 
 const onMouseWheel = (e: WheelEvent) => {
-  if (!appSettingsStore.app.kernel.running) return
-  const isDown = e.deltaY > 0
+  if (!kernelApiStore.running) return
 
-  showController.value = isDown || controllerRef.value?.scrollTop !== 0
-}
+  const isScrollingDown = e.deltaY > 0
 
-const onTunSwitchChange = async (enable: boolean) => {
-  try {
-    await kernelApiStore.updateConfig('tun', enable)
-    // await envStore.clearSystemProxy()
-  } catch (error: any) {
-    console.error(error)
-    message.error(error)
+  if (
+    isScrollingDown ||
+    appSettingsStore.app.kernel.controllerCloseMode === ControllerCloseMode.All
+  ) {
+    const currentScrollTop = controllerRef.value?.scrollTop ?? 0
+    if (isScrollingDown || currentScrollTop === 0) {
+      scrollEventCount += 1
+    }
+    if (scrollEventCount >= appSettingsStore.app.kernel.controllerSensitivity) {
+      showController.value = isScrollingDown || currentScrollTop !== 0
+    }
   }
-}
 
-const onSystemProxySwitchChange = async (enable: boolean) => {
-  try {
-    await envStore.switchSystemProxy(enable)
-    // await kernelApiStore.updateConfig('tun', false)
-  } catch (error: any) {
-    console.error(error)
-    message.error(error)
-    envStore.systemProxy = !envStore.systemProxy
-  }
+  resetScrollEventCount()
 }
 
 watch(showController, (v) => {
@@ -101,216 +80,99 @@ watch(showController, (v) => {
 </script>
 
 <template>
-  <div @wheel="onMouseWheel" class="homeview">
-    <div v-if="!appSettingsStore.app.kernel.running || kernelApiStore.loading" class="center">
-      <img src="@/assets/logo.png" draggable="false" style="margin-bottom: 16px; height: 128px" />
+  <div class="home-view relative overflow-hidden h-full" @wheel.passive="onMouseWheel">
+    <div
+      v-if="(!kernelApiStore.running && !kernelApiStore.stopping) || kernelApiStore.starting"
+      class="w-full h-[90%] flex flex-col items-center justify-center"
+    >
+      <img :src="logo" draggable="false" class="w-128 mb-16" />
 
       <template v-if="profilesStore.profiles.length === 0">
         <p>{{ t('home.noProfile', [APP_TITLE]) }}</p>
-        <Button @click="toggleQuickStart" type="primary">{{ t('home.quickStart') }}</Button>
+        <Button type="primary" @click="handleShowQuickStart">{{ t('home.quickStart') }}</Button>
       </template>
 
       <template v-else>
-        <div class="profiles">
+        <div class="flex gap-8 mb-32">
           <Card
-            v-for="p in profilesStore.profiles.slice(0, 4)"
+            v-for="p in profilesStore.profiles.slice(0, profilesStore.profiles.length > 4 ? 3 : 4)"
             :key="p.id"
             :selected="appSettingsStore.app.kernel.profile === p.id"
             @click="appSettingsStore.app.kernel.profile = p.id"
-            class="profiles-card"
           >
-            {{ p.name }}
+            <div
+              class="w-128 h-full flex items-center justify-center py-24 text-center cursor-pointer font-bold text-12"
+            >
+              {{ p.name }}
+            </div>
           </Card>
-          <Card @click="toggleQuickStart" class="profiles-card">
-            {{ t('home.quickStart') }}
+          <Dropdown v-if="profilesStore.profiles.length > 4" placement="top">
+            <Card class="h-full">
+              <div
+                class="w-128 h-full flex items-center justify-center py-24 text-center cursor-pointer font-bold text-12"
+              >
+                ...
+              </div>
+            </Card>
+            <template #overlay>
+              <div class="flex flex-col py-8">
+                <Button
+                  v-for="p in profilesStore.profiles.slice(3)"
+                  :key="p.id"
+                  @click="appSettingsStore.app.kernel.profile = p.id"
+                >
+                  <div class="min-w-32 w-full flex items-center justify-between">
+                    {{ p.name }}
+                    <Icon v-if="appSettingsStore.app.kernel.profile === p.id" icon="selected" />
+                  </div>
+                </Button>
+              </div>
+            </template>
+          </Dropdown>
+          <Card @click="handleShowQuickStart">
+            <div
+              class="w-128 h-full flex items-center justify-center py-24 text-center cursor-pointer font-bold text-12"
+            >
+              {{ t('home.quickStart') }}
+            </div>
           </Card>
         </div>
-        <Button @click="handleStartKernel" :loading="kernelApiStore.loading" type="primary">
+        <Button :loading="kernelApiStore.starting" type="primary" @click="handleStartKernel">
           {{ t('home.overview.start') }}
         </Button>
-        <Button @click="toggleKernelLogs" type="link" size="small">
+        <Button type="link" size="small" class="mt-4" @click="handleShowKernelLogs">
           {{ t('home.overview.viewlog') }}
         </Button>
       </template>
     </div>
 
-    <template v-else-if="!kernelApiStore.statusLoading">
-      <div :class="{ blur: showController }">
-        <div class="kernel-status">
-          <Button @click="toggleSettingsModal" type="text" size="small" icon="settings" />
-          <Switch
-            v-model="envStore.systemProxy"
-            @change="onSystemProxySwitchChange"
-            size="small"
-            border="square"
-            class="ml-4"
-          >
-            {{ t('home.overview.systemProxy') }}
-          </Switch>
-          <Switch
-            v-model="kernelApiStore.config.tun.enable"
-            @change="onTunSwitchChange"
-            size="small"
-            border="square"
-            class="ml-8"
-          >
-            {{ t('home.overview.tunMode') }}
-          </Switch>
-          <Button
-            @click="toggleApiLogs"
-            v-tips="'home.overview.viewlog'"
-            type="text"
-            size="small"
-            icon="log"
-            class="ml-auto"
-          />
-          <Button
-            @click="handleRestartKernel"
-            v-tips="'home.overview.restart'"
-            type="text"
-            size="small"
-            icon="restart"
-          />
-          <Button
-            @click="handleStopKernel"
-            v-tips="'home.overview.stop'"
-            type="text"
-            size="small"
-            icon="stop"
-          />
-        </div>
+    <template v-else-if="!kernelApiStore.coreStateLoading">
+      <div :class="{ 'blur-3xl': showController }">
         <OverView />
-        <Divider>
-          <Button @click="showController = true" type="link" size="small">
+        <Divider class="controller-trigger">
+          <Button type="link" size="small" @click="showController = true">
             {{ t('home.controller.name') }}
           </Button>
         </Divider>
       </div>
 
-      <div ref="controllerRef" :class="{ expanded: showController }" class="controller">
-        <Button
-          v-show="showController"
-          class="close-controller"
-          @click="showController = false"
-          type="text"
-          size="small"
-        >
-          <Icon icon="close" />
-        </Button>
+      <div
+        ref="controllerRef"
+        :class="showController ? 'translate-y-0' : 'translate-y-full'"
+        class="controller-panel absolute inset-0 pb-32 overflow-y-auto duration-400"
+      >
         <GroupsController />
       </div>
+
+      <Button
+        v-show="showController"
+        class="controller-close fixed left-1/2 -translate-x-1/2 bottom-12 z-2"
+        style="background-color: var(--card-bg)"
+        type="text"
+        size="small"
+        icon="close"
+        @click="showController = false"
+      />
     </template>
   </div>
-
-  <Modal
-    v-model:open="showApiLogs"
-    :submit="false"
-    mask-closable
-    title="Logs"
-    width="90"
-    height="90"
-    cancel-text="common.close"
-  >
-    <LogsController />
-  </Modal>
-
-  <Modal v-model:open="showQuickStart" :footer="false" mask-closable title="subscribes.enterLink">
-    <QuickStart />
-  </Modal>
-
-  <Modal
-    v-model:open="showSettings"
-    :submit="false"
-    mask-closable
-    cancel-text="common.close"
-    title="home.overview.settings"
-    width="90"
-  >
-    <CommonController />
-  </Modal>
-
-  <Modal
-    v-model:open="showKernelLogs"
-    :submit="false"
-    width="90"
-    height="90"
-    mask-closable
-    title="home.overview.viewlog"
-  >
-    <KernelLogs />
-  </Modal>
 </template>
-
-<style lang="less" scoped>
-.blur {
-  filter: blur(50px);
-}
-.homeview {
-  position: relative;
-  overflow: hidden;
-  height: 100%;
-
-  .center {
-    position: absolute;
-    width: 100%;
-    height: 90%;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-  }
-}
-
-.kernel-status {
-  display: flex;
-  align-items: center;
-  background-color: var(--card-bg);
-  padding: 2px 8px;
-  border-radius: 8px;
-}
-
-.controller {
-  position: absolute;
-  z-index: 9;
-  width: 100%;
-  height: 100%;
-  top: 100%;
-  padding-bottom: 32px;
-  overflow-y: auto;
-  transition: all 0.4s;
-}
-
-.expanded {
-  top: 0;
-}
-
-.close-controller {
-  position: fixed;
-  z-index: 2;
-  left: 50%;
-  bottom: 12px;
-  transform: translateX(-50%);
-  border-radius: 8px;
-  background-color: var(--card-bg);
-}
-
-.profiles {
-  padding-bottom: 16px;
-  display: flex;
-  max-width: 90%;
-  overflow-x: hidden;
-  &-card {
-    cursor: pointer;
-    display: flex;
-    flex-shrink: 0;
-    align-items: center;
-    justify-content: center;
-    font-weight: bold;
-    font-size: 12px;
-    width: 120px;
-    height: 60px;
-    padding-top: 6px;
-    margin: 8px;
-  }
-}
-</style>

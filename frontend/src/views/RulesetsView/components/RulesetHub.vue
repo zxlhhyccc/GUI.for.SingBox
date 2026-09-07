@@ -1,80 +1,73 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, h, inject, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { useMessage, useAlert } from '@/hooks'
-import { ignoredError } from '@/utils'
-import { useRulesetsStore } from '@/stores'
-import { HttpGet, Readfile, Writefile } from '@/bridge'
-import { RulesetFormat } from '@/constant'
+import { HttpGet } from '@/bridge'
+import { BuiltInOutbound } from '@/constant/kernel'
+import { DefaultRouteRule, DefaultRouteRuleset } from '@/constant/profile'
+import { RulesetFormat, RulesetType, RuleType } from '@/enums/kernel'
+import { useProfilesStore, useRulesetsStore } from '@/stores'
+import { alert, deepClone, message, picker } from '@/utils'
 
-type RulesetHub = {
-  geosite: string
-  geoip: string
-  list: { name: string; type: 'geosite' | 'geoip'; description: string; count: number }[]
-}
+import Button from '@/components/Button/index.vue'
+import Pagination from '@/components/Pagination/index.vue'
 
-const loading = ref(false)
-const rulesetHub = ref<RulesetHub>({ geosite: '', geoip: '', list: [] })
-const cacheFile = 'data/.cache/ruleset-list.json'
-const hubUrl = 'https://github.com/GUI-for-Cores/Ruleset-Hub/releases/download/latest/sing.json'
+const pageSize = 27
+const rulesetFormats = [RulesetFormat.Source, RulesetFormat.Binary]
+const currentPage = ref(1)
 
 const { t } = useI18n()
-const { alert } = useAlert()
-const { message } = useMessage()
 const rulesetsStore = useRulesetsStore()
+const profilesStore = useProfilesStore()
 
 const keywords = ref('')
+const handleCancel = inject('cancel') as any
+
+watch(keywords, () => (currentPage.value = 1))
 
 const filteredList = computed(() => {
-  if (!keywords.value) return rulesetHub.value.list
-  return rulesetHub.value.list.filter((ruleset) => ruleset.name.includes(keywords.value))
+  const tokens = keywords.value.trim().split(/\s+/).filter(Boolean)
+  if (tokens.length === 0) return rulesetsStore.rulesetHub.list
+  const lowered = tokens.map((t) => t.toLocaleLowerCase())
+  return rulesetsStore.rulesetHub.list.filter((ruleset) => {
+    const fields = [ruleset.name, ruleset.type, ruleset.description].map((f) =>
+      f?.toLocaleLowerCase(),
+    )
+    return lowered.every((token) => fields.some((f) => f?.includes(token)))
+  })
 })
 
-const updateList = async () => {
-  loading.value = true
-  try {
-    const { body } = await HttpGet<string>(hubUrl)
-    rulesetHub.value = JSON.parse(body)
-    await Writefile(cacheFile, body)
-    message.success('plugins.updateSuccess')
-  } catch (error: any) {
-    message.error(error)
-  }
-  loading.value = false
-}
+const currentList = computed(() => {
+  return filteredList.value.slice(
+    (currentPage.value - 1) * pageSize,
+    (currentPage.value - 1) * pageSize + pageSize,
+  )
+})
 
-const getList = async () => {
-  const body = await ignoredError(Readfile, cacheFile)
-  if (body) {
-    rulesetHub.value = JSON.parse(body)
-    return
-  }
-
-  updateList()
-}
-
-const getRulesetUrlAndSuffix = (ruleset: RulesetHub['list'][number], format: RulesetFormat) => {
+const getRulesetUrlAndSuffix = (ruleset: App.RulesetHub['list'][number], format: RulesetFormat) => {
   const suffix = { [RulesetFormat.Binary]: '.srs', [RulesetFormat.Source]: '.json' }[format]
-  const basrUrl = { geosite: rulesetHub.value.geosite, geoip: rulesetHub.value.geoip }[ruleset.type]
-  return [basrUrl + ruleset.name + suffix, suffix]
+  const basrUrl = {
+    geosite: rulesetsStore.rulesetHub.geosite,
+    geoip: rulesetsStore.rulesetHub.geoip,
+  }[ruleset.type]
+  return [basrUrl + ruleset.name + suffix, suffix] as const
 }
 
-const handleAddRuleset = async (ruleset: RulesetHub['list'][number], format: RulesetFormat) => {
+const handleAddRuleset = async (ruleset: App.RulesetHub['list'][number], format: RulesetFormat) => {
   const [url, suffix] = getRulesetUrlAndSuffix(ruleset, format)
   const id = ruleset.type + '_' + ruleset.name + '.' + format
   const file = ruleset.type + '_' + ruleset.name + suffix
   try {
     await rulesetsStore.addRuleset({
       id,
-      tag: ruleset.name,
+      name: `${ruleset.name}-${ruleset.type}${suffix}`,
       updateTime: 0,
       disabled: false,
       type: 'Http',
       format,
       path: 'data/rulesets/' + file,
       url,
-      count: ruleset.count
+      count: ruleset.count,
     })
     const { success } = message.info('rulesets.updating')
     await rulesetsStore.updateRuleset(id)
@@ -85,7 +78,82 @@ const handleAddRuleset = async (ruleset: RulesetHub['list'][number], format: Rul
   }
 }
 
-const handlePreview = async (ruleset: RulesetHub['list'][number], format: RulesetFormat) => {
+const handleAddRulesetToProfile = async (
+  ruleset: App.RulesetHub['list'][number],
+  format: RulesetFormat,
+) => {
+  const [url, suffix] = getRulesetUrlAndSuffix(ruleset, format)
+
+  try {
+    const { items } = await picker.resource('profile', 'profiles.select', { min: 1, max: 1 })
+    const profile = items[0]
+    if (!profile) return
+
+    const insertionPointIndex = profile.route.rules.findIndex(
+      (rule) => rule.type === RuleType.InsertionPoint,
+    )
+
+    if (insertionPointIndex === -1) {
+      message.warn('kernel.missingInsertionPoint')
+      return
+    }
+
+    const profileRuleset = profile.route.rule_set.find(
+      (item) => item.type === RulesetType.Remote && item.url === url,
+    )
+    if (
+      profileRuleset &&
+      profile.route.rules.some(
+        (rule) =>
+          rule.type === RuleType.RuleSet && rule.payload.split(',').includes(profileRuleset.id),
+      )
+    ) {
+      message.info('common.added')
+      return
+    }
+
+    const outboundOptions = [
+      ...BuiltInOutbound.map((outbound) => ({ label: outbound, value: outbound })),
+      ...profile.outbounds.map((outbound) => ({
+        label: outbound.tag,
+        value: outbound.id,
+        description: outbound.type,
+      })),
+    ]
+    const target = await picker.single('kernel.route.rules.outbound', outboundOptions, [
+      profile.outbounds[0]?.id || BuiltInOutbound[0]!,
+    ])
+
+    if (!target) return
+
+    const nextProfile = deepClone(profile)
+    let rulesetReferenceId = profileRuleset?.id
+    if (!rulesetReferenceId) {
+      const rulesetReference = {
+        ...DefaultRouteRuleset(),
+        type: RulesetType.Remote,
+        tag: `${ruleset.name}-${ruleset.type}${suffix}`,
+        format,
+        url,
+      }
+      nextProfile.route.rule_set.unshift(rulesetReference)
+      rulesetReferenceId = rulesetReference.id
+    }
+
+    nextProfile.route.rules.splice(insertionPointIndex + 1, 0, {
+      ...DefaultRouteRule(),
+      payload: rulesetReferenceId,
+      outbound: target,
+    })
+
+    await profilesStore.editProfile(nextProfile.id, nextProfile)
+    message.success('common.success')
+  } catch (error) {
+    message.error(error)
+  }
+}
+
+const handlePreview = async (ruleset: App.RulesetHub['list'][number], format: RulesetFormat) => {
   const { destroy, error } = message.info('rulesets.fetching', 15_000)
   try {
     const { body } = await HttpGet(getRulesetUrlAndSuffix(ruleset, format)[0])
@@ -97,133 +165,141 @@ const handlePreview = async (ruleset: RulesetHub['list'][number], format: Rulese
   }
 }
 
-const isAlreadyAdded = (id: string) => rulesetsStore.getRulesetById(id)
+const handleUpdatePluginHub = async () => {
+  try {
+    await rulesetsStore.updateRulesetHub()
+    message.success('rulesets.updateSuccess')
+  } catch (err: any) {
+    message.error(err.message || err)
+  }
+}
 
-getList()
+const isAlreadyAdded = (ruleset: App.RulesetHub['list'][number], format: RulesetFormat) => {
+  const id = ruleset.type + '_' + ruleset.name + '.' + format
+  return rulesetsStore.getRulesetById(id)
+}
+
+if (rulesetsStore.rulesetHub.list.length === 0) {
+  rulesetsStore.updateRulesetHub()
+}
+
+const modalSlots = {
+  action: () =>
+    !rulesetsStore.rulesetHubLoading
+      ? h(Pagination, {
+          current: currentPage.value,
+          'onUpdate:current': (current: number) => (currentPage.value = current),
+          total: filteredList.value.length,
+          pageSize: pageSize,
+          size: 'small',
+          class: 'mr-auto',
+        })
+      : null,
+  close: () =>
+    h(
+      Button,
+      {
+        type: 'text',
+        onClick: handleCancel,
+      },
+      () => t('common.close'),
+    ),
+}
+
+defineExpose({ modalSlots })
 </script>
 
 <template>
-  <div class="ruleset-hub">
-    <div v-if="loading" class="loading"><Button type="text" loading /></div>
-    <template v-else>
-      <div class="header">
-        <Button type="text">{{ t('rulesets.total') }} : {{ rulesetHub.list.length }}</Button>
+  <ModalContainer :empty="filteredList.length === 0">
+    <template #top>
+      <div class="flex items-center gap-8">
         <Input
           v-model="keywords"
-          size="small"
+          :border="false"
+          :placeholder="t('rulesets.total') + ': ' + rulesetsStore.rulesetHub.list.length"
           clearable
-          auto-size
-          :placeholder="t('common.keywords')"
-          class="ml-8 flex-1"
+          size="small"
+          class="flex-1"
         />
-        <Button @click="updateList" type="link" class="ml-auto">
+        <Button
+          icon="refresh"
+          size="small"
+          :loading="rulesetsStore.rulesetHubLoading"
+          @click="handleUpdatePluginHub"
+        >
           {{ t('plugins.update') }}
         </Button>
       </div>
+    </template>
 
-      <div class="list">
+    <template #body>
+      <div class="grid grid-cols-3 text-12 gap-8">
         <Card
-          v-for="ruleset in filteredList"
+          v-for="ruleset in currentList"
           :key="ruleset.name + ruleset.type"
           :title="ruleset.name"
-          class="ruleset-item"
         >
           <template #extra>
             <Tag size="small" color="cyan">{{ ruleset.type }}</Tag>
           </template>
-          <div class="count">
-            {{ t('rulesets.rulesetCount') }} : {{ ruleset.count }}
-            <Button
-              @click="handlePreview(ruleset, RulesetFormat.Source)"
-              icon="preview"
-              size="small"
-              type="text"
-            />
-          </div>
-          <div class="description">
-            {{ ruleset.description || t('rulesets.noDesc') }}
-          </div>
-          <div class="action">
-            <template
-              v-if="isAlreadyAdded(ruleset.type + '_' + ruleset.name + '.' + RulesetFormat.Source)"
-            >
-              <Button type="text" size="small">
-                {{ t('ruleset.format.source') }} {{ t('common.added') }}
-              </Button>
-            </template>
-            <template v-else>
+          <div class="flex flex-col h-full">
+            <div class="flex items-center justify-between">
+              {{ t('rulesets.rulesetCount') }} : {{ ruleset.count }}
               <Button
-                @click="handleAddRuleset(ruleset, RulesetFormat.Source)"
-                type="link"
+                icon="preview"
                 size="small"
-              >
-                {{ t('common.add') }} {{ t('ruleset.format.source') }}
-              </Button>
-            </template>
-            <template
-              v-if="isAlreadyAdded(ruleset.type + '_' + ruleset.name + '.' + RulesetFormat.Binary)"
-            >
-              <Button type="text" size="small">
-                {{ t('ruleset.format.binary') }} {{ t('common.added') }}
-              </Button>
-            </template>
-            <template v-else>
-              <Button
-                @click="handleAddRuleset(ruleset, RulesetFormat.Binary)"
-                type="link"
-                size="small"
-              >
-                {{ t('common.add') }} {{ t('ruleset.format.binary') }}
-              </Button>
-            </template>
+                type="text"
+                @click="handlePreview(ruleset, RulesetFormat.Source)"
+              />
+            </div>
+            <div class="flex items-center justify-between">
+              <Dropdown :trigger="['hover']" placement="bottom">
+                <Button type="text" size="small" style="margin-left: -2px; padding-left: 2px">
+                  {{ t('common.more') }}
+                </Button>
+                <template #overlay>
+                  <div class="flex flex-col gap-4 min-w-96 p-4">
+                    <Button
+                      v-for="format in rulesetFormats"
+                      :key="format"
+                      :disabled="!!isAlreadyAdded(ruleset, format)"
+                      type="text"
+                      size="small"
+                      @click="handleAddRuleset(ruleset, format)"
+                    >
+                      <template v-if="isAlreadyAdded(ruleset, format)">
+                        {{ t(`ruleset.format.${format}`) }} {{ t('common.added') }}
+                      </template>
+                      <template v-else>
+                        {{ t('common.add') }} {{ t(`ruleset.format.${format}`) }}
+                      </template>
+                    </Button>
+                  </div>
+                </template>
+              </Dropdown>
+
+              <Dropdown :trigger="['hover']" placement="bottom">
+                <Button type="link" size="small">
+                  {{ t('rulesets.addToProfile') }}
+                </Button>
+                <template #overlay>
+                  <div class="flex flex-col gap-4 min-w-96 p-4">
+                    <Button
+                      v-for="format in rulesetFormats"
+                      :key="format"
+                      type="text"
+                      size="small"
+                      @click="handleAddRulesetToProfile(ruleset, format)"
+                    >
+                      {{ t(`ruleset.format.${format}`) }}
+                    </Button>
+                  </div>
+                </template>
+              </Dropdown>
+            </div>
           </div>
         </Card>
       </div>
     </template>
-  </div>
+  </ModalContainer>
 </template>
-
-<style lang="less" scoped>
-.ruleset-hub {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-
-  .ruleset-item {
-    display: inline-block;
-    margin: 4px;
-    font-size: 12px;
-    width: calc(33.333% - 8px);
-    .count {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .description {
-      margin: 4px 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .action {
-      text-align: right;
-    }
-  }
-}
-
-.loading {
-  display: flex;
-  justify-content: center;
-  height: 98%;
-}
-
-.header {
-  display: flex;
-  align-items: center;
-}
-
-.list {
-  padding-bottom: 16px;
-  overflow: auto;
-}
-</style>

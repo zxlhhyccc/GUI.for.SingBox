@@ -1,590 +1,513 @@
-import { Readfile, Writefile } from '@/bridge'
-import { deepAssign, deepClone, ignoredError } from '@/utils'
-import { KernelConfigFilePath, ProxyGroup } from '@/constant/kernel'
-import { type ProfileType, useSubscribesStore, useRulesetsStore, usePluginsStore } from '@/stores'
-import { TunConfigDefaults } from '@/constant'
+import { parse } from 'yaml'
 
-const generateCommonRule = (rule: Record<string, any>) => {
-  const { type, payload, invert } = rule
+import { ReadFile, WriteFile } from '@/bridge'
+import { CoreConfigFilePath } from '@/constant/kernel'
+import { Branch } from '@/enums/app'
+import {
+  DnsServer,
+  Inbound,
+  Outbound,
+  RuleAction,
+  RulesetType,
+  RuleType,
+  Strategy,
+} from '@/enums/kernel'
+import {
+  useAppSettingsStore,
+  usePluginsStore,
+  useRulesetsStore,
+  useSubscribesStore,
+} from '@/stores'
+import { deepAssign, deepClone, APP_TITLE, createTextMatcher } from '@/utils'
 
-  const invertConfig = invert ? { invert: invert } : {}
-
-  if (type === 'rule_set') {
-    const rulesetsStore = useRulesetsStore()
-    const ruleset = rulesetsStore.getRulesetById(payload)
-    if (ruleset) {
-      return { rule_set: ruleset.tag, ...invertConfig }
-    } else {
-      return null
-    }
-  } else if (type === 'rule_set_url') {
-    if (!rule['ruleset-name']) {
-      return null
-    }
-    return { rule_set: rule['ruleset-name'], ...invertConfig }
-  } else if (type === 'inline') {
-    if (!rule.payload) {
-      return null
-    }
-    return { ...JSON.parse(rule.payload), ...invertConfig }
-  } else if (
-    ['ip_is_private', 'src_ip_is_private', 'rule_set_ipcidr_match_source'].includes(type)
-  ) {
-    const this_rule: Record<string, any> = {}
-    this_rule[type] = !invert
-    return {
-      ...this_rule
-    }
-  }
-
-  const payloadsRule: Record<string, any> = {}
-  const payloadsList: string[] = payload.split(',')
-
-  let payloads = []
-  if (['port', 'source_port', 'ip_version'].includes(type)) {
-    payloads = payloadsList.map((r) => parseInt(r.trim()))
-  } else {
-    payloads = payloadsList.map((r) => r.trim())
-  }
-
-  payloadsRule[type] = payloads.length == 1 ? payloads[0] : payloads
-  return {
-    ...payloadsRule,
-    ...invertConfig
-  }
-}
-
-export const generateRule = (rule: ProfileType['rulesConfig'][0]) => {
-  const common_rule = generateCommonRule(rule)
-  if (common_rule) {
-    return {
-      ...common_rule,
-      outbound: rule.proxy
-    }
-  }
-  return common_rule
-}
-
-export const generateDnsRule = (rule: ProfileType['dnsRulesConfig'][0]) => {
-  const common_rule = generateCommonRule(rule)
-  if (common_rule) {
-    return {
-      ...common_rule,
-      ...(rule['disable-cache'] ? { disable_cache: true } : {}),
-      ...(rule['client-subnet'].length > 0 ? { client_subnet: rule['client-subnet'] } : {}),
-      server: rule.server
-    }
-  }
-  return common_rule
-}
-
-type ProxiesType = { type: string; tag: string }
-
-const generateRuleSets = async (
-  rules: ProfileType['rulesConfig'],
-  dnsRules: ProfileType['dnsRulesConfig']
+const _generateRule = (
+  rule: App.Rule | App.DnsRule,
+  rule_set: App.ProfileRuleSet[],
+  inbounds: App.Inbound[],
 ) => {
-  const rulesetsStore = useRulesetsStore()
-  const ruleSets: {
-    tag: string
-    type: string
-    format: string
-    path?: string
-    url?: string
-    download_detour?: string
-  }[] = []
+  const getInbound = (id: string) => inbounds.find((v) => v.id === id)?.tag
+  const getRuleset = (id: string) => rule_set.find((v) => v.id === id)?.tag
 
-  const usedRuleSets = new Set<string>()
-
-  const allRules = [...rules, ...dnsRules]
-
-  allRules
-    .filter((rule) => rule.type === 'rule_set')
-    .forEach((rule) => {
-      const ruleset = rulesetsStore.getRulesetById(rule.payload)
-      if (ruleset && !usedRuleSets.has(ruleset.tag)) {
-        usedRuleSets.add(ruleset.tag)
-        ruleSets.push({
-          tag: ruleset.tag,
-          type: 'local',
-          format: ruleset.format,
-          path: ruleset.path.replace('data/', '../')
-        })
-      }
-    })
-
-  allRules
-    .filter((rule) => rule.type === 'rule_set_url')
-    .forEach((rule) => {
-      const tag = rule['ruleset-name']
-      if (tag && !usedRuleSets.has(tag)) {
-        usedRuleSets.add(tag)
-        ruleSets.push({
-          tag: tag,
-          type: 'remote',
-          format: rule['ruleset-format'],
-          url: rule.payload,
-          download_detour: rule['download-detour']
-        })
-      }
-    })
-  return ruleSets
-}
-
-const generateDnsRulesWithFakeIp = async (profile: ProfileType) => {
-  let hasFakeIpRule = false
-
-  const rules = profile.dnsRulesConfig
-    .filter((item) => {
-      if (item.type === 'final') {
-        return false
-      }
-      if (item.type === 'fakeip') {
-        if (hasFakeIpRule) {
-          return false
+  const extra: Recordable = { action: rule.action, invert: rule.invert ? true : undefined }
+  if (rule.type === RuleType.Inline) {
+    deepAssign(extra, JSON.parse(rule.payload))
+  } else if (rule.type === RuleType.RuleSet) {
+    extra[rule.type] = rule.payload.split(',').map((id) => getRuleset(id))
+  } else if (rule.type === RuleType.Inbound) {
+    extra[rule.type] = getInbound(rule.payload)
+  } else if (
+    [RuleType.IpIsPrivate, RuleType.IpAcceptAny, RuleType.QueryDnssec].includes(rule.type as any)
+  ) {
+    extra[rule.type] = rule.payload === 'true'
+  } else if (rule.type === RuleType.IpVersion) {
+    extra[rule.type] = Number(rule.payload)
+  } else if (rule.type === RuleType.ClashMode) {
+    extra[rule.type] = rule.payload
+  } else {
+    extra[rule.type] = String(rule.payload)
+      .split(',')
+      .map((val) => {
+        if ([RuleType.Port, RuleType.SourcePort].includes(rule.type as any)) {
+          return Number(val)
         }
-        hasFakeIpRule = true
-      }
-      return true
-    })
-    .map((rule) => generateDnsRule(rule))
-    .filter((v) => v != null) as Record<string, any>[]
-
-  if (hasFakeIpRule) {
-    const idx = rules.findIndex((item) => item['fakeip'] !== undefined)
-
-    if (idx >= 0) {
-      const invert = rules[idx]['invert'] ? { invert: true } : {}
-      const disable_cache = rules[idx]['disable_cache'] ? { disable_cache: true } : {}
-
-      rules[idx] = {
-        type: 'logical',
-        mode: 'and',
-        rules: [
-          {
-            domain_suffix: profile.dnsConfig['fake-ip-filter'],
-            invert: true
-          },
-          {
-            query_type: ['A', 'AAAA']
-          }
-        ],
-        ...invert,
-        ...disable_cache,
-        server: 'fakeip-dns'
-      }
+        if (rule.type === RuleType.QueryType && /^\d+$/.test(val.trim())) {
+          return Number(val)
+        }
+        return val
+      })
+    if (extra[rule.type].length === 1) {
+      extra[rule.type] = extra[rule.type][0]
     }
   }
-
-  return rules
+  return extra
 }
 
-const generateDnsRules = async (profile: ProfileType) => {
-  return profile.dnsRulesConfig
-    .filter((v) => v.type !== 'final' && v.type !== 'fakeip' && v.server !== 'fakeip-dns')
-    .map((rule) => generateDnsRule(rule))
-    .filter((v) => v != null)
-}
-
-const generateDnsConfig = async (profile: ProfileType) => {
-  const remote_dns = profile.dnsConfig['remote-dns']
-  const remote_resolver_dns = profile.dnsConfig['remote-resolver-dns']
-  const local_dns = profile.dnsConfig['local-dns']
-  const resolver_dns = profile.dnsConfig['resolver-dns']
-  const local_detour = profile.dnsConfig['local-dns-detour']
-  const local_detour_config = { detour: local_detour || 'direct' }
-  const remote_detour = profile.dnsConfig['remote-dns-detour']
-  const remote_detour_config = remote_detour ? { detour: remote_detour } : {}
-  const disable_cache = profile.dnsConfig['disable-cache']
-  const disable_expire = profile.dnsConfig['disable-expire']
-  const independent_cache = profile.dnsConfig['independent-cache']
-  const client_subnet =
-    profile.dnsConfig['client-subnet'].length > 0
-      ? { client_subnet: profile.dnsConfig['client-subnet'] }
-      : {}
-
+const generateExperimental = (experimental: App.Experimental, outbounds: App.Outbound[]) => {
+  const getOutbound = (id: string) => outbounds.find((v) => v.id === id)?.tag
   return {
-    servers: [
-      {
-        tag: 'remote-dns',
-        address: remote_dns,
-        address_resolver: 'remote-resolver-dns',
-        ...remote_detour_config
-      },
-      {
-        tag: 'local-dns',
-        address: local_dns,
-        address_resolver: 'resolver-dns',
-        ...local_detour_config
-      },
-      {
-        tag: 'resolver-dns',
-        address: resolver_dns,
-        ...local_detour_config
-      },
-      {
-        tag: 'remote-resolver-dns',
-        address: remote_resolver_dns,
-        ...remote_detour_config
-      },
-      ...(profile.dnsConfig.fakeip
-        ? [
-            {
-              tag: 'fakeip-dns',
-              address: 'fakeip'
-            }
-          ]
-        : []),
-      {
-        tag: 'block',
-        address: 'rcode://success'
+    clash_api: {
+      ...experimental.clash_api,
+      external_ui_download_detour: getOutbound(experimental.clash_api.external_ui_download_detour),
+    },
+    cache_file: experimental.cache_file,
+  }
+}
+
+const generateHttpClients = (route: App.Route, outbounds: App.Outbound[]) => {
+  const getOutbound = (id: string) => outbounds.find((v) => v.id === id)?.tag
+  const defaultHttpClient = getOutbound(route.default_http_client)
+  const detours = Array.from(
+    new Set(
+      [
+        defaultHttpClient,
+        ...route.rule_set.map((ruleset) => getOutbound(ruleset.http_client)),
+      ].filter((tag): tag is string => !!tag),
+    ),
+  )
+
+  const httpClients: { tag: string; detour?: string }[] = detours.map((detour) => ({
+    tag: detour,
+    detour,
+  }))
+  if (!defaultHttpClient) {
+    let defaultTag = 'default'
+    while (detours.includes(defaultTag)) defaultTag = `_${defaultTag}`
+    httpClients.unshift({ tag: defaultTag })
+  }
+  return httpClients
+}
+
+const generateInbounds = (inbounds: App.Inbound[]) => {
+  return inbounds.flatMap((inbound) => {
+    if (!inbound.enable) return []
+    if (inbound.type !== Inbound.Tun && inbound.type !== Inbound.Direct) {
+      const users = inbound[inbound.type]!.users.map((user) => ({
+        username: user.split(':')[0],
+        password: user.split(':')[1],
+      }))
+      return {
+        type: inbound.type,
+        tag: inbound.tag,
+        ...inbound[inbound.type]!.listen,
+        users: users.length > 0 ? users : undefined,
       }
-    ],
-    disable_cache,
-    disable_expire,
-    independent_cache,
-    ...client_subnet,
-    rules: await (profile.dnsConfig.fakeip
-      ? generateDnsRulesWithFakeIp(profile)
-      : generateDnsRules(profile))
-  }
-}
-
-const generateInBoundsConfig = async (profile: ProfileType) => {
-  const inbounds = []
-
-  let http_proxy_port = 0
-
-  const listenConfig = {
-    sniff: profile.advancedConfig.sniff,
-    sniff_override_destination: profile.advancedConfig['sniff-override-destination'],
-    ...(profile.advancedConfig.domain_strategy && profile.advancedConfig.domain_strategy.length > 0
-      ? { domain_strategy: profile.advancedConfig.domain_strategy }
-      : {})
-  }
-
-  const listen = profile.generalConfig['allow-lan'] ? '::' : '127.0.0.1'
-
-  if (profile.generalConfig['mixed-port'] > 0) {
-    http_proxy_port = profile.generalConfig['mixed-port']
-
-    inbounds.push({
-      type: 'mixed',
-      listen: listen,
-      listen_port: profile.generalConfig['mixed-port'],
-      ...listenConfig,
-      tcp_fast_open: profile.advancedConfig['tcp-fast-open'],
-      tcp_multi_path: profile.advancedConfig['tcp-multi-path'],
-      udp_fragment: profile.advancedConfig['udp-fragment']
-    })
-  }
-
-  if (profile.advancedConfig.port > 0) {
-    if (http_proxy_port == 0) {
-      http_proxy_port = profile.advancedConfig.port
     }
-
-    inbounds.push({
-      type: 'http',
-      listen: listen,
-      listen_port: profile.advancedConfig.port,
-      ...listenConfig,
-      tcp_fast_open: profile.advancedConfig['tcp-fast-open'],
-      tcp_multi_path: profile.advancedConfig['tcp-multi-path'],
-      udp_fragment: profile.advancedConfig['udp-fragment']
-    })
-  }
-
-  if (profile.advancedConfig['socks-port'] > 0) {
-    inbounds.push({
-      type: 'socks',
-      listen: listen,
-      listen_port: profile.advancedConfig['socks-port'],
-      ...listenConfig,
-      tcp_fast_open: profile.advancedConfig['tcp-fast-open'],
-      tcp_multi_path: profile.advancedConfig['tcp-multi-path'],
-      udp_fragment: profile.advancedConfig['udp-fragment']
-    })
-  }
-
-  if (profile.tunConfig.enable) {
-    let inet4_address = profile.tunConfig['inet4-address']
-    let inet6_address = profile.tunConfig['inet6-address']
-
-    if (profile.advancedConfig.domain_strategy === 'ipv4_only') {
-      inet6_address = ''
-    } else if (profile.advancedConfig.domain_strategy === 'ipv6_only') {
-      inet4_address = ''
+    if (inbound.type === Inbound.Direct) {
+      return {
+        type: inbound.type,
+        tag: inbound.tag,
+        ...inbound[inbound.type]!.listen,
+        network: inbound.direct!.network || undefined,
+      }
     }
-    if (inet4_address === undefined) {
-      inet4_address = TunConfigDefaults()['inet4-address']
+    if (inbound.type === Inbound.Tun) {
+      return {
+        type: inbound.type,
+        tag: inbound.tag,
+        ...inbound.tun!,
+        route_address: inbound.tun!.route_address?.length ? inbound.tun!.route_address : undefined,
+        route_exclude_address: inbound.tun!.route_exclude_address?.length
+          ? inbound.tun!.route_exclude_address
+          : undefined,
+      }
     }
-    if (inet6_address === undefined) {
-      inet6_address = TunConfigDefaults()['inet6-address']
-    }
-
-    inbounds.push({
-      type: 'tun',
-      ...(profile.tunConfig['interface-name'].length > 0
-        ? { interface_name: profile.tunConfig['interface-name'] }
-        : {}),
-      ...(inet4_address.length > 0 ? { inet4_address: inet4_address } : {}),
-      ...(inet6_address.length > 0 ? { inet6_address: inet6_address } : {}),
-      mtu: profile.tunConfig.mtu,
-      auto_route: profile.tunConfig['auto-route'],
-      strict_route: profile.tunConfig['strict-route'],
-      endpoint_independent_nat: profile.tunConfig['endpoint-independent-nat'],
-      stack: profile.tunConfig.stack.toLowerCase(),
-      platform: {
-        http_proxy: {
-          enabled: http_proxy_port > 0,
-          server: '127.0.0.1',
-          server_port: http_proxy_port
-        }
-      },
-      ...listenConfig
-    })
-  }
-  return inbounds
-}
-
-const filterProxy = (proxy: { type: string; tag: string }, filter: string) => {
-  if (!filter || filter.length == 0 || proxy.type === 'built-in') {
-    return true
-  }
-  return new RegExp(filter).test(proxy.tag)
-}
-
-const generateOutBoundsConfig = async (groups: ProfileType['proxyGroupsConfig']) => {
-  const outbounds = []
-
-  const subs = new Set<string>()
-
-  groups.forEach((group) => {
-    group.use.forEach((use) => subs.add(use))
   })
-  const proxyMap: Record<string, ProxiesType[]> = {}
-  const proxyTags = new Set<string>()
-  const proxies: any = []
+}
+
+const generateOutbounds = async (outbounds: App.Outbound[]) => {
+  const result: Recordable[] = []
+  const SubscriptionCache: Recordable<any[]> = {}
+  const proxiesSet = new Set<any>()
+  const builtInProxiesSet = new Set<string>()
 
   const subscribesStore = useSubscribesStore()
-  for (const subID of subs) {
-    const sub = subscribesStore.getSubscribeById(subID)
-    if (sub) {
-      try {
-        const subStr = await Readfile(sub.path)
-        const subProxies = JSON.parse(subStr)
 
-        // let subProxies = JSON.parse(subStr)
-        // subProxies = sub.proxies
-        //   .map((proxy) => {
-        //     return subProxies.find((v: any) => v.tag === proxy.tag)
-        //   })
-        //   .filter((v) => v !== undefined)
-
-        proxyMap[sub.id] = subProxies
-        for (const subProxy of subProxies) {
-          proxyTags.add(subProxy.tag)
-          proxies.push(subProxy)
-        }
-      } catch (error) {
-        console.log(error)
-      }
+  for (const outbound of outbounds) {
+    const _outbound: Recordable = {
+      type: outbound.type,
+      tag: outbound.tag,
     }
-  }
-
-  for (const group of groups) {
-    for (const proxy of group.proxies)
-      if (proxy.type !== 'built-in' && filterProxy(proxy, group.filter)) {
-        if (!proxyTags.has(proxy.tag)) {
-          if (!proxyMap[proxy.type]) {
-            const sub = subscribesStore.getSubscribeById(proxy.type)
+    if (outbound.type === Outbound.Urltest) {
+      _outbound.url = outbound.url
+      _outbound.interval = outbound.interval
+      _outbound.tolerance = outbound.tolerance
+    }
+    if (outbound.type === Outbound.Selector || outbound.type === Outbound.Urltest) {
+      _outbound.interrupt_exist_connections = outbound.interrupt_exist_connections
+      _outbound.outbounds = []
+      const isTagMatching = createTextMatcher(outbound.include, outbound.exclude)
+      for (const proxy of outbound.outbounds) {
+        if (proxy.type === 'Built-in') {
+          if ([Outbound.Direct, Outbound.Block].includes(proxy.id as Outbound)) {
+            builtInProxiesSet.add(proxy.id)
+          }
+          _outbound.outbounds.push(proxy.tag)
+        } else {
+          const subId = proxy.type === 'Subscription' ? proxy.id : proxy.type
+          if (!SubscriptionCache[subId]) {
+            const sub = subscribesStore.getSubscribeById(subId)
             if (sub) {
-              try {
-                const subStr = await Readfile(sub.path)
-                const subProxies = JSON.parse(subStr)
-                proxyMap[sub.id] = subProxies
-              } catch (error) {
-                console.log(error)
-              }
+              const subStr = await ReadFile(sub.path)
+              const proxies = JSON.parse(subStr)
+              SubscriptionCache[subId] = proxies
             }
           }
-          if (proxyMap[proxy.type]) {
-            const subProxy = proxyMap[proxy.type].find((v) => v.tag === proxy.tag)
-            if (subProxy) {
-              proxyTags.add(proxy.tag)
-              proxies.push(subProxy)
+          if (proxy.type === 'Subscription') {
+            _outbound.outbounds.push(
+              ...SubscriptionCache[subId]!.map((v) => v.tag).filter((tag) => isTagMatching(tag)),
+            )
+            SubscriptionCache[subId]!.forEach((v) => proxiesSet.add(v))
+          } else {
+            const _proxy = SubscriptionCache[subId]!.find((v) => v.tag === proxy.tag)
+            if (_proxy && isTagMatching(_proxy.tag)) {
+              _outbound.outbounds.push(_proxy.tag)
+              proxiesSet.add(_proxy)
             }
           }
         }
       }
-  }
-
-  const usedProxies = new Set<string>()
-
-  function getGroupOutbounds(group_proxies: any[], uses: string[], filter: string) {
-    const outbounds = group_proxies
-      .filter((proxy) => filterProxy(proxy, filter))
-      .map((proxy) => {
-        usedProxies.add(proxy.tag)
-        return proxy.tag
-      })
-    outbounds.push(
-      ...uses
-        .map((use) =>
-          proxyMap[use]
-            .filter((proxy) => filterProxy(proxy, filter))
-            .map((proxy) => {
-              usedProxies.add(proxy.tag)
-              return proxy.tag
-            })
-        )
-        .flat()
-    )
-    return outbounds.length === 0 ? ['direct'] : outbounds
-  }
-
-  groups.forEach((group) => {
-    group.type === ProxyGroup.Select &&
-      outbounds.push({
-        tag: group.tag,
-        type: 'selector',
-        outbounds: getGroupOutbounds(group.proxies, group.use, group.filter)
-      })
-    group.type === ProxyGroup.UrlTest &&
-      outbounds.push({
-        tag: group.tag,
-        type: 'urltest',
-        outbounds: getGroupOutbounds(group.proxies, group.use, group.filter),
-        url: group.url,
-        interval: group.interval.toString() + 's',
-        tolerance: group.tolerance
-      })
-  })
-  outbounds.push(...proxies.filter((v: any) => usedProxies.has(v.tag)))
-  return outbounds
-}
-
-const generateRouteConfig = async (profile: ProfileType) => {
-  const route: Record<string, any> = {
-    rule_set: await generateRuleSets(profile.rulesConfig, profile.dnsRulesConfig),
-    rules: []
-  }
-
-  route.rules.push(
-    ...profile.rulesConfig
-      .filter((v) => v.type !== 'final')
-      .map((rule) => generateRule(rule))
-      .filter((v) => v != null)
-  )
-
-  if (profile.generalConfig.mode == 'direct') {
-    route['final'] = 'direct'
-  } else if (
-    profile.generalConfig.mode == 'global' &&
-    profile.proxyGroupsConfig.find((v) => v.tag === 'GLOBAL')
-  ) {
-    route['final'] = 'GLOBAL'
-  } else {
-    const final = profile.rulesConfig.find((v) => v.type === 'final')
-    if (final) {
-      route['final'] = final.proxy
     }
+    result.push(_outbound)
   }
 
-  const interface_name = profile.generalConfig['interface-name']
-  if (interface_name == '') {
-    route['auto_detect_interface'] = true
-  } else {
-    route['default_interface'] = interface_name
-  }
-  return route
-}
-
-export const generateConfig = async (originalProfile: ProfileType) => {
-  const profile = deepClone(originalProfile)
-
-  const config: Record<string, any> = {
-    log: { level: profile.generalConfig['log-level'], timestamp: true },
-    experimental: {
-      clash_api: {
-        external_controller: profile.advancedConfig['external-controller'],
-        external_ui: profile.advancedConfig['external-ui'],
-        secret: profile.advancedConfig.secret,
-        external_ui_download_url: profile.advancedConfig['external-ui-url'],
-        default_mode: profile.generalConfig.mode
-      },
-      cache_file: {
-        enabled: profile.advancedConfig.profile['store-cache'],
-        store_fakeip: profile.advancedConfig.profile['store-fake-ip'],
-        store_rdrc: profile.advancedConfig.profile['store-rdrc']
-      }
-    },
-    inbounds: await generateInBoundsConfig(profile),
-    outbounds: [
-      ...(await generateOutBoundsConfig(profile.proxyGroupsConfig)),
-      {
-        type: 'direct',
-        tag: 'direct'
-      },
-      {
-        type: 'dns',
-        tag: 'dns-out'
-      },
-      {
-        type: 'block',
-        tag: 'block'
-      }
-    ],
-    route: await generateRouteConfig(profile)
-  }
-
-  if (profile.dnsConfig.enable) {
-    const inet4_range = profile.dnsConfig['fake-ip-range-v4']
-    const inet6_range = profile.dnsConfig['fake-ip-range-v6']
-    config['dns'] = {
-      ...(await generateDnsConfig(profile)),
-      fakeip: {
-        enabled: profile.dnsConfig.fakeip,
-        ...(inet4_range.length > 0 ? { inet4_range: inet4_range } : {}),
-        ...(inet6_range.length > 0 ? { inet6_range: inet6_range } : {})
-      },
-      final: profile.dnsConfig['final-dns'],
-      ...(profile.dnsConfig.strategy.length > 0 ? { strategy: profile.dnsConfig.strategy } : {})
-    }
-  }
-
-  const { priority, config: mixin } = originalProfile.mixinConfig
-  if (priority === 'mixin') {
-    deepAssign(config, JSON.parse(mixin))
-  } else if (priority === 'gui') {
-    deepAssign(config, deepAssign(JSON.parse(mixin), config))
-  }
-
-  const fn = new AsyncFunction(
-    `${profile.scriptConfig.code};return await onGenerate(${JSON.stringify(config)})`
-  )
-  let _config
-  try {
-    _config = await fn()
-  } catch (error: any) {
-    throw error.message || error
-  }
-
-  if (typeof _config !== 'object') {
-    throw 'Wrong result'
-  }
-
-  const pluginsStore = usePluginsStore()
-  const result = await pluginsStore.onGenerateTrigger(_config, originalProfile)
+  result.push(...proxiesSet)
+  result.push(...Array.from(builtInProxiesSet).map((v) => ({ type: v, tag: v })))
 
   return result
 }
 
-export const generateConfigFile = async (profile: ProfileType) => {
-  // const header = `# DO NOT EDIT - Generated by ${APP_TITLE}\n`
+const generateRoute = (
+  route: App.Route,
+  inbounds: App.Inbound[],
+  outbounds: App.Outbound[],
+  dns: App.Dns,
+) => {
+  const getOutbound = (id: string) => outbounds.find((v) => v.id === id)?.tag
+  const getDnsServer = (id: string) => dns.servers.find((v) => v.id === id)?.tag
+  const isInboundEnabled = (id: string) => inbounds.find((v) => v.id === id)?.enable
 
-  const config = await generateConfig(profile)
+  const rulesetsStore = useRulesetsStore()
 
-  await Writefile(KernelConfigFilePath, JSON.stringify(config, null, 2))
+  const extra: Recordable = {}
+  if (!route.auto_detect_interface) {
+    extra.default_interface = route.default_interface
+  }
+  return {
+    rules: route.rules.flatMap((rule) => {
+      if (rule.type === RuleType.InsertionPoint || !rule.enable) {
+        return []
+      }
+      if (rule.type === RuleType.Inbound && !isInboundEnabled(rule.payload)) {
+        return []
+      }
+      const extra: Recordable = _generateRule(rule, route.rule_set, inbounds)
+
+      if (rule.action === RuleAction.Route) {
+        extra.outbound = getOutbound(rule.outbound)
+      } else if (rule.action === RuleAction.RouteOptions) {
+        deepAssign(extra, JSON.parse(rule.outbound))
+      } else if (rule.action === RuleAction.Reject) {
+        extra.method = rule.outbound
+      } else if (rule.action === RuleAction.Sniff) {
+        if (rule.sniffer.length) {
+          extra.sniffer = rule.sniffer
+        }
+      } else if (rule.action === RuleAction.Resolve) {
+        if (rule.strategy !== Strategy.Default) {
+          extra.strategy = rule.strategy
+        }
+        extra.server = getDnsServer(rule.server)
+      }
+      if (rule.invert) {
+        extra.invert = true
+      }
+      return extra
+    }),
+    rule_set: route.rule_set.map((ruleset) => {
+      const extra: Recordable = {}
+      if (ruleset.type === RuleType.Inline) {
+        extra.rules = JSON.parse(ruleset.rules)
+      } else if (ruleset.type === RulesetType.Local) {
+        const _ruleset = rulesetsStore.getRulesetById(ruleset.path)
+        extra.path = _ruleset?.path.replace('data/', '../')
+        extra.format = ruleset.format
+      } else if (ruleset.type === RulesetType.Remote) {
+        extra.url = ruleset.url
+        extra.format = ruleset.format
+        extra.http_client = getOutbound(ruleset.http_client)
+        if (ruleset.update_interval) {
+          extra.update_interval = ruleset.update_interval
+        }
+      }
+      return {
+        tag: ruleset.tag,
+        type: ruleset.type,
+        ...extra,
+      }
+    }),
+    auto_detect_interface: route.auto_detect_interface,
+    find_process: route.find_process ? true : undefined,
+    final: getOutbound(route.final),
+    default_http_client: getOutbound(route.default_http_client),
+    default_domain_resolver: {
+      server: getDnsServer(route.default_domain_resolver.server),
+    },
+    ...extra,
+  }
+}
+
+const generateDns = (
+  dns: App.Dns,
+  rule_set: App.ProfileRuleSet[],
+  inbounds: App.Inbound[],
+  outbounds: App.Outbound[],
+) => {
+  const getOutbound = (id: string) => outbounds.find((v) => v.id === id)
+  const getDnsServer = (id: string) => dns.servers.find((v) => v.id === id)?.tag
+  const getRuleTag = (id: string) => dns.rules.find((v) => v.id === id)?.tag
+  const extra: Recordable = {}
+  if (dns.strategy !== Strategy.Default) {
+    extra.strategy = dns.strategy
+  }
+  if (dns.client_subnet) {
+    extra.client_subnet = dns.client_subnet
+  }
+  return {
+    servers: dns.servers.flatMap((server) => {
+      const extra: Recordable = {}
+      if (
+        [
+          DnsServer.Local,
+          DnsServer.Tcp,
+          DnsServer.Udp,
+          DnsServer.Tls,
+          DnsServer.Quic,
+          DnsServer.Https,
+          DnsServer.H3,
+          DnsServer.Dhcp,
+        ].includes(server.type as any)
+      ) {
+        if (server.detour) {
+          const outbound = getOutbound(server.detour)
+          if (outbound?.type !== Outbound.Direct) {
+            extra.detour = outbound?.tag
+          }
+        }
+        server.domain_resolver && (extra.domain_resolver = getDnsServer(server.domain_resolver))
+        if (
+          [
+            DnsServer.Tcp,
+            DnsServer.Udp,
+            DnsServer.Tls,
+            DnsServer.Quic,
+            DnsServer.Https,
+            DnsServer.H3,
+          ].includes(server.type as any)
+        ) {
+          server.server_port && (extra.server_port = Number(server.server_port))
+          extra.server = server.server
+          if ([DnsServer.Https, DnsServer.H3].includes(server.type as any)) {
+            server.path && (extra.path = server.path)
+          }
+        }
+      }
+      if (server.type === DnsServer.Hosts) {
+        extra.path = server.hosts_path.reduce((p, c) => p.concat(c.split(',')), [] as string[])
+        extra.predefined = Object.entries(server.predefined).reduce(
+          (p, [k, v]) => ({ ...p, [k]: v.split(',') }),
+          {},
+        )
+      } else if (server.type === DnsServer.Dhcp) {
+        server.interface && (extra.interface = server.interface)
+      } else if (server.type === DnsServer.FakeIP) {
+        server.inet4_range && (extra.inet4_range = server.inet4_range)
+        server.inet6_range && (extra.inet6_range = server.inet6_range)
+      }
+      return {
+        tag: server.tag,
+        type: server.type,
+        ...extra,
+      }
+    }),
+    rules: dns.rules.flatMap((rule) => {
+      if (rule.type === RuleType.InsertionPoint || !rule.enable) {
+        return []
+      }
+      const extra: Recordable = _generateRule(rule, rule_set, inbounds)
+      if (rule.type === RuleType.Inline && rule.payload.includes('__is_fake_ip')) {
+        if (!dns.servers.find((v) => v.type === DnsServer.FakeIP)) {
+          return []
+        }
+        delete extra.__is_fake_ip
+      }
+      const isRoute = rule.action === RuleAction.Route
+      const isEvaluate = rule.action === RuleAction.Evaluate
+      const isRouteOptions = rule.action === RuleAction.RouteOptions
+      const isPredefined = rule.action === RuleAction.Predefined
+      const isReject = rule.action === RuleAction.Reject
+      if (isRoute || isEvaluate) {
+        extra.server = getDnsServer(rule.server)
+      }
+      if (isEvaluate) {
+        extra.tag = rule.tag
+      }
+      if (isRoute || isEvaluate || isRouteOptions) {
+        rule.disable_cache && (extra.disable_cache = rule.disable_cache)
+        rule.client_subnet && (extra.client_subnet = rule.client_subnet)
+      }
+      if (isRouteOptions || isPredefined) {
+        deepAssign(extra, JSON.parse(rule.server))
+      }
+      if (isReject) {
+        extra.method = rule.server
+      }
+      if (rule.match_response) {
+        extra.match_response =
+          rule.match_response === '__true' ? true : getRuleTag(rule.match_response)
+      }
+      return extra
+    }),
+    disable_cache: dns.disable_cache,
+    disable_expire: dns.disable_expire,
+    optimistic: dns.optimistic,
+    final: getDnsServer(dns.final),
+    ...extra,
+  }
+}
+
+export const generateDnsServerURL = (dnsServer: App.DnsServerConfig) => {
+  const { type, server_port, path, server, interface: _interface } = dnsServer
+  let address = ''
+  if (type == DnsServer.Https) {
+    address = `https://${server}${server_port ? ':' + server_port : ''}${path ? path : ''}`
+  } else if (type == DnsServer.H3) {
+    address = `h3://${server}${server_port ? ':' + server_port : ''}${path ? path : ''}`
+  } else if (type == DnsServer.Dhcp) {
+    address = `dhcp://${_interface}`
+  } else if (type == DnsServer.FakeIP) {
+    address =
+      'fake-ip://' +
+      (dnsServer.inet4_range ? dnsServer.inet4_range : '') +
+      (dnsServer.inet6_range ? (dnsServer.inet4_range ? ',' : '') + dnsServer.inet6_range : '')
+  } else if (type === DnsServer.Hosts) {
+    address = 'hosts'
+  } else if (type === DnsServer.Local) {
+    address = 'local'
+  } else {
+    address = `${type}://${server}${server_port ? ':' + server_port : ''}`
+  }
+  return address
+}
+
+const _adaptToStableBranch = (_: Recordable) => {}
+
+type GenerateConfigOptions = {
+  enableStableConfigCompat?: boolean
+  enablePluginProcessing?: boolean
+  enableMixinProcessing?: boolean
+  enableScriptProcessing?: boolean
+}
+
+export const generateConfig = async (
+  originalProfile: App.Profile,
+  options: GenerateConfigOptions = {},
+) => {
+  if (typeof options === 'boolean') {
+    options = { enableStableConfigCompat: options }
+  }
+  const appSettings = useAppSettingsStore()
+  const isMainBranch = appSettings.app.kernel.branch === Branch.Main
+
+  const {
+    enableStableConfigCompat = isMainBranch,
+    enablePluginProcessing = true,
+    enableMixinProcessing = true,
+    enableScriptProcessing = true,
+  } = options
+
+  const profile = deepClone(originalProfile)
+  // step 1
+  let config: Recordable = {
+    log: profile.log,
+    experimental: generateExperimental(profile.experimental, profile.outbounds),
+    http_clients: generateHttpClients(profile.route, profile.outbounds),
+    inbounds: generateInbounds(profile.inbounds),
+    outbounds: await generateOutbounds(profile.outbounds),
+    route: generateRoute(profile.route, profile.inbounds, profile.outbounds, profile.dns),
+    dns: generateDns(profile.dns, profile.route.rule_set, profile.inbounds, profile.outbounds),
+  }
+
+  // adapt to stable branch
+  if (enableStableConfigCompat) {
+    _adaptToStableBranch(config)
+  }
+
+  // step 2
+  if (enablePluginProcessing) {
+    const pluginsStore = usePluginsStore()
+    config = await pluginsStore.onGenerateTrigger(config, originalProfile)
+  }
+
+  // step 3
+  if (enableMixinProcessing) {
+    const { priority, config: mixin } = originalProfile.mixin
+    if (priority === 'mixin') {
+      deepAssign(config, parse(mixin))
+    } else if (priority === 'gui') {
+      deepAssign(config, deepAssign(parse(mixin), config))
+    }
+  }
+
+  // step 4
+  if (enableScriptProcessing) {
+    const fn = new window.AsyncFunction(
+      'config',
+      `${originalProfile.script.code}; return await onGenerate(config)`,
+    )
+    try {
+      config = await fn(config)
+    } catch (error: any) {
+      throw error.message || error
+    }
+
+    if (typeof config !== 'object') {
+      throw 'Wrong result'
+    }
+  }
+
+  return config
+}
+
+export const generateConfigFile = async (
+  profile: App.Profile,
+  beforeWrite: (config: any) => Promise<any>,
+) => {
+  const header = `DO NOT EDIT - Generated by ${APP_TITLE}`
+
+  const _config = await generateConfig(profile)
+  const config = await beforeWrite(_config)
+
+  config.experimental.cache_file.path = 'cache.db'
+
+  await WriteFile(CoreConfigFilePath, JSON.stringify({ $schema: header, ...config }, null, 2))
 }

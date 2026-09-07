@@ -1,80 +1,94 @@
 <script setup lang="ts">
-import { ref, inject, type Ref, computed } from 'vue'
+import { ref, inject, computed, useTemplateRef, type Ref, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { useMessage, useAlert, useBool } from '@/hooks'
-import { deepClone, generateConfig, sampleID } from '@/utils'
-import * as Defaults from '@/constant/profile'
-import { WindowToggleMaximise } from '@/bridge'
-import { type ProfileType, useProfilesStore } from '@/stores'
+import { useProfilesStore } from '@/stores'
+import { deepClone, generateConfig, message, alert } from '@/utils'
 
-import GeneralConfig from './GeneralConfig.vue'
-import AdvancedConfig from './AdvancedConfig.vue'
-import TunConfig from './TunConfig.vue'
-import DnsConfig from './DnsConfig.vue'
-import ProxyGroupsConfig from './ProxyGroupsConfig.vue'
-import DnsRulesConfig from './DnsRulesConfig.vue'
-import RulesConfig from './RulesConfig.vue'
-import MixinAndScript from './MixinAndScriptConfig.vue'
+import Button from '@/components/Button/index.vue'
+import Dropdown from '@/components/Dropdown/index.vue'
 
 interface Props {
   id?: string
   step?: number
-  isUpdate?: boolean
+}
+
+enum Step {
+  Name = 0,
+  General = 1,
+  Inbounds = 2,
+  Outbounds = 3,
+  Route = 4,
+  Dns = 5,
+  MixinScript = 6,
 }
 
 const props = withDefaults(defineProps<Props>(), {
   id: '',
   isUpdate: false,
-  step: 0
+  step: Step.Name,
 })
 
+import DnsConfig from './DnsConfig.vue'
+import GeneralConfig from './GeneralConfig.vue'
+import InboundsConfig from './InboundsConfig.vue'
+import MixinAndScript from './MixinAndScriptConfig.vue'
+import OutboundsConfig from './OutboundsConfig.vue'
+import RouteConfig from './RouteConfig.vue'
+
+const { t } = useI18n()
+const inboundsRef = useTemplateRef('inboundsRef')
+const outboundsRef = useTemplateRef('outboundsRef')
+const routeRef = useTemplateRef('routeRef')
+const dnsRef = useTemplateRef('dnsRef')
+const profilesStore = useProfilesStore()
+
 const loading = ref(false)
-const groupsRef = ref()
-const rulesRef = ref()
-const dnsRulesRef = ref()
 const currentStep = ref(props.step)
 
 const stepItems = [
   { title: 'profile.step.name' },
   { title: 'profile.step.general' },
-  { title: 'profile.step.tun' },
-  { title: 'profile.step.groups' },
-  { title: 'profile.step.rules' },
+  { title: 'profile.step.inbounds' },
+  { title: 'profile.step.outbounds' },
+  { title: 'profile.step.route' },
   { title: 'profile.step.dns' },
-  { title: 'profile.step.dnsRules' },
-  { title: 'profile.step.mixin-script' }
-]
+  { title: 'profile.step.mixin-script' },
+] as const
 
-const profile = ref<ProfileType>({
-  id: sampleID(),
-  name: '',
-  generalConfig: Defaults.GeneralConfigDefaults(),
-  advancedConfig: Defaults.AdvancedConfigDefaults(),
-  tunConfig: Defaults.TunConfigDefaults(),
-  dnsConfig: Defaults.DnsConfigDefaults(),
-  proxyGroupsConfig: Defaults.ProxyGroupsConfigDefaults(),
-  rulesConfig: Defaults.RulesConfigDefaults(),
-  dnsRulesConfig: Defaults.DnsRulesConfigDefaults(),
-  mixinConfig: Defaults.MixinConfigDefaults(),
-  scriptConfig: Defaults.ScriptConfigDefaults()
+const profile = ref<App.Profile>(profilesStore.getProfileTemplate())
+
+const inboundOptions = computed(() =>
+  profile.value.inbounds.map((v) => ({ label: v.tag, value: v.id })),
+)
+
+const outboundOptions = computed(() =>
+  profile.value.outbounds.map((v) => ({ label: v.tag, value: v.id })),
+)
+
+const serverOptions = computed(() =>
+  profile.value.dns.servers.map((v) => ({ label: v.tag, value: v.id })),
+)
+
+const generalConfig = computed({
+  get() {
+    return { log: profile.value.log, experimental: profile.value.experimental }
+  },
+  set({ log, experimental }) {
+    profile.value.log = log
+    profile.value.experimental = experimental
+  },
 })
 
 const mixinAndScriptConfig = computed({
   get() {
-    return { mixin: profile.value.mixinConfig, script: profile.value.scriptConfig }
+    return { mixin: profile.value.mixin, script: profile.value.script }
   },
   set({ mixin, script }) {
-    profile.value.mixinConfig = mixin
-    profile.value.scriptConfig = script
-  }
+    profile.value.mixin = mixin
+    profile.value.script = script
+  },
 })
-
-const { t } = useI18n()
-const { alert } = useAlert()
-const { message } = useMessage()
-const profilesStore = useProfilesStore()
-const [showAdvancedSetting, toggleAdvancedSetting] = useBool(false)
 
 const handleCancel = inject('cancel') as any
 const handleSubmit = inject('submit') as any
@@ -84,13 +98,12 @@ const handleNextStep = () => currentStep.value++
 const handleSave = async () => {
   loading.value = true
   try {
-    if (props.isUpdate) {
+    if (props.id) {
       await profilesStore.editProfile(props.id, profile.value)
-      handleSubmit()
     } else {
       await profilesStore.addProfile(profile.value)
-      handleCancel()
     }
+    await handleSubmit()
   } catch (error: any) {
     console.error('handleSave: ', error)
     message.error(error)
@@ -100,11 +113,12 @@ const handleSave = async () => {
 
 const handleAdd = () => {
   const map: Record<number, Ref> = {
-    '3': groupsRef,
-    '4': rulesRef,
-    '6': dnsRulesRef
+    [Step.Inbounds]: inboundsRef,
+    [Step.Outbounds]: outboundsRef,
+    [Step.Route]: routeRef,
+    [Step.Dns]: dnsRef,
   }
-  map[currentStep.value].value.handleAdd()
+  map[currentStep.value]!.value.handleAdd()
 }
 
 const handlePreview = async () => {
@@ -116,115 +130,149 @@ const handlePreview = async () => {
   }
 }
 
-if (props.isUpdate) {
+if (props.id) {
   const p = profilesStore.getProfileById(props.id)
   if (p) {
     profile.value = deepClone(p)
   }
 }
+
+const modalSlots = {
+  title: () =>
+    h(
+      Dropdown,
+      {},
+      {
+        default: () =>
+          h(
+            'div',
+            {
+              class: 'font-bold',
+            },
+            `${t(stepItems[currentStep.value]!.title)} （${currentStep.value + 1} / ${stepItems.length}）`,
+          ),
+        overlay: () =>
+          h(
+            'div',
+            {
+              class: 'p-4 flex flex-col',
+            },
+            stepItems.map((step, index) =>
+              h(
+                Button,
+                {
+                  type: currentStep.value === index ? 'link' : 'text',
+                  disabled: !profile.value.name && currentStep.value !== index,
+                  onClick: () => (currentStep.value = index),
+                },
+                () => t(step.title),
+              ),
+            ),
+          ),
+      },
+    ),
+
+  toolbar: () => [
+    h(Button, {
+      type: 'text',
+      icon: 'file',
+      onClick: handlePreview,
+    }),
+    h(Button, {
+      type: 'text',
+      icon: 'add',
+      style: {
+        display: [Step.Inbounds, Step.Outbounds, Step.Route, Step.Dns].includes(currentStep.value)
+          ? ''
+          : 'none',
+      },
+      onClick: handleAdd,
+    }),
+  ],
+  action: () => [
+    h(
+      Button,
+      {
+        disabled: currentStep.value === Step.Name,
+        onClick: handlePrevStep,
+      },
+      () => t('common.prevStep'),
+    ),
+    h(
+      Button,
+      {
+        class: 'mr-auto',
+        disabled: !profile.value.name || currentStep.value === stepItems.length - 1,
+        onClick: handleNextStep,
+      },
+      () => t('common.nextStep'),
+    ),
+  ],
+  cancel: () =>
+    h(
+      Button,
+      {
+        disabled: loading.value,
+        onClick: handleCancel,
+      },
+      () => t('common.cancel'),
+    ),
+  submit: () =>
+    h(
+      Button,
+      {
+        type: 'primary',
+        loading: loading.value,
+        disabled: !profile.value.name,
+        onClick: handleSave,
+      },
+      () => t('common.save'),
+    ),
+}
+
+defineExpose({ modalSlots })
 </script>
 
 <template>
-  <div @dblclick="WindowToggleMaximise" class="header" style="--wails-draggable: drag">
-    <div class="header-title">{{ t(stepItems[currentStep].title) }}</div>
-    <Button @click="handlePreview" icon="file" type="text" class="ml-auto" />
-    <Button
-      v-show="[3, 4, 6].includes(currentStep)"
-      @click="handleAdd"
-      icon="add"
-      type="text"
-      class="mr-8"
-    />
-  </div>
-
-  <div class="form">
-    <div v-show="currentStep === 0">
-      <div class="form-item">
-        <div class="name">{{ t('profile.name') }} *</div>
-        <Input v-model="profile.name" auto-size autofocus class="flex-1 ml-8" />
-      </div>
-    </div>
-
-    <div v-show="currentStep === 1">
-      <GeneralConfig v-model="profile.generalConfig" />
-      <Divider>
-        <Button type="text" size="small" @click="toggleAdvancedSetting">
-          {{ t('profile.advancedSettings') }}
-        </Button>
-      </Divider>
-      <div v-if="showAdvancedSetting">
-        <AdvancedConfig v-model="profile.advancedConfig" />
-      </div>
-    </div>
-
-    <div v-show="currentStep === 2">
-      <TunConfig v-model="profile.tunConfig" />
-    </div>
-
-    <div v-show="currentStep === 3">
-      <ProxyGroupsConfig ref="groupsRef" v-model="profile.proxyGroupsConfig" />
-    </div>
-
-    <div v-show="currentStep === 4">
-      <RulesConfig
-        ref="rulesRef"
-        v-model="profile.rulesConfig"
-        :proxy-groups="profile.proxyGroupsConfig"
-        :profile="profile"
+  <div>
+    <div v-if="currentStep === Step.Name">
+      <Input
+        v-model="profile.name"
+        autofocus
+        :border="false"
+        :placeholder="t('profile.name')"
+        class="w-full"
       />
     </div>
-
-    <div v-show="currentStep === 5">
-      <DnsConfig v-model="profile.dnsConfig" :proxy-groups="profile.proxyGroupsConfig" />
+    <div v-if="currentStep === Step.General">
+      <GeneralConfig v-model="generalConfig" :outbound-options="outboundOptions" />
     </div>
-
-    <div v-show="currentStep === 6">
-      <DnsRulesConfig
-        ref="dnsRulesRef"
-        v-model="profile.dnsRulesConfig"
-        :dns-config="profile.dnsConfig"
-        :proxy-groups="profile.proxyGroupsConfig"
+    <div v-if="currentStep === Step.Inbounds">
+      <InboundsConfig ref="inboundsRef" v-model="profile.inbounds" />
+    </div>
+    <div v-if="currentStep === Step.Outbounds">
+      <OutboundsConfig ref="outboundsRef" v-model="profile.outbounds" />
+    </div>
+    <div v-if="currentStep === Step.Route">
+      <RouteConfig
+        ref="routeRef"
+        v-model="profile.route"
+        :inbound-options="inboundOptions"
+        :outbound-options="outboundOptions"
+        :server-options="serverOptions"
       />
     </div>
-
-    <div v-show="currentStep === 7">
+    <div v-if="currentStep === Step.Dns">
+      <DnsConfig
+        ref="dnsRef"
+        v-model="profile.dns"
+        :inbound-options="inboundOptions"
+        :outbound-options="outboundOptions"
+        :rule-set="profile.route.rule_set"
+      />
+    </div>
+    <div v-if="currentStep === Step.MixinScript">
       <MixinAndScript v-model="mixinAndScriptConfig" />
     </div>
   </div>
-
-  <div class="form-action">
-    <Button @click="handlePrevStep" :disabled="currentStep == 0" type="text">
-      {{ t('common.prevStep') }}
-    </Button>
-    <Button
-      @click="handleNextStep"
-      :disabled="!profile.name || currentStep == stepItems.length - 1"
-      type="text"
-      class="mr-auto"
-    >
-      {{ t('common.nextStep') }}
-    </Button>
-    <Button @click="handleCancel">{{ t('common.cancel') }}</Button>
-    <Button @click="handleSave" :loading="loading" :disabled="!profile.name" type="primary">
-      {{ t('common.save') }}
-    </Button>
-  </div>
 </template>
-
-<style lang="less" scoped>
-.header {
-  display: flex;
-  align-items: center;
-  margin-top: 8px;
-  &-title {
-    font-size: 20px;
-    font-weight: bold;
-    margin: 8px 0 16px 0;
-  }
-}
-.form {
-  padding-right: 8px;
-  overflow-y: auto;
-  max-height: calc(70vh - 8px);
-}
-</style>

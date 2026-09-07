@@ -1,125 +1,172 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { useMessage } from '@/hooks'
-import { ignoredError } from '@/utils'
-import { HttpGet, Readfile, Writefile } from '@/bridge'
-import { usePluginsStore, type PluginType } from '@/stores'
+import { usePluginsStore } from '@/stores'
+import { createTextMatcher, deepClone, message, modal } from '@/utils'
 
-const loading = ref(false)
-const list = ref<PluginType[]>([])
-const cacheFile = 'data/.cache/plugin-list.json'
-const hubUrl =
-  'https://raw.githubusercontent.com/GUI-for-Cores/Plugin-Hub/main/plugins/generic.json'
-const gfsUrl = 'https://raw.githubusercontent.com/GUI-for-Cores/Plugin-Hub/main/plugins/gfs.json'
+import PluginSource from './PluginSource.vue'
+
+const keywords = ref('')
 
 const { t } = useI18n()
-const { message } = useMessage()
 const pluginsStore = usePluginsStore()
+const loadingSet = ref(new Set<string>())
 
-const updateList = async () => {
-  loading.value = true
+const groupOrders = ['Recommended', 'Extensions', 'Tools', 'Fun', 'Examples', 'Development']
+
+const groups = computed(() => {
+  const map: Record<string, App.Plugin[]> = {}
+  pluginsStore.pluginHub.forEach((plugin) => {
+    const group = plugin.group || 'Others'
+    if (!map[group]) {
+      map[group] = []
+    }
+    map[group].push(plugin)
+  })
+  return Object.keys(map)
+    .map((name) => ({
+      name,
+      plugins: map[name]!,
+    }))
+    .sort((a, b) => {
+      const indexA = groupOrders.indexOf(a.name)
+      const indexB = groupOrders.indexOf(b.name)
+      if (indexA === -1 && indexB === -1) {
+        return a.name.localeCompare(b.name)
+      }
+      if (indexA === -1) return 1
+      if (indexB === -1) return -1
+      return indexA - indexB
+    })
+})
+
+const filteredPlugins = computed(() => {
+  const keyword = keywords.value.trim()
+  if (!keyword) return groups.value
+  const match = createTextMatcher(keyword.toLocaleLowerCase(), '')
+  return groups.value
+    .map((group) => ({
+      name: group.name,
+      plugins: group.plugins.filter((plugin) =>
+        match([plugin.id, plugin.name, plugin.description].join('').toLocaleLowerCase()),
+      ),
+    }))
+    .filter((group) => group.plugins.length)
+})
+
+const handleAddPlugin = async (plugin: App.Plugin) => {
+  loadingSet.value.add(plugin.id)
   try {
-    const { body: body1 } = await HttpGet<string>(hubUrl)
-    const { body: body2 } = await HttpGet<string>(gfsUrl)
-    const list1 = JSON.parse(body1)
-    const list2 = JSON.parse(body2)
-    list.value = [...list1, ...list2]
-    await Writefile(cacheFile, JSON.stringify(list.value))
+    await pluginsStore.addPlugin(deepClone(plugin))
+  } catch (err: any) {
+    message.error(err.message || err)
+  } finally {
+    loadingSet.value.delete(plugin.id)
+  }
+}
+
+const handleUpdatePluginHub = async () => {
+  try {
+    await pluginsStore.updatePluginHub()
     message.success('plugins.updateSuccess')
-  } catch (error: any) {
-    message.error(error)
+  } catch (err: any) {
+    message.error(err.message || err)
   }
-  loading.value = false
 }
 
-const getList = async () => {
-  const body = await ignoredError(Readfile, cacheFile)
-  if (body) {
-    list.value = JSON.parse(body)
-    return
-  }
-
-  updateList()
-}
-
-const handleAddPlugin = async (plugin: PluginType) => {
-  try {
-    await pluginsStore.addPlugin(plugin)
-    // Try to autoload the plugin
-    await ignoredError(pluginsStore.reloadPlugin, plugin)
-    pluginsStore.updatePluginTrigger(plugin)
-    const { id } = message.info('plugins.updating')
-    await pluginsStore.updatePlugin(plugin.id)
-    message.update(id, 'common.success', 'success')
-  } catch (error: any) {
-    console.error(error)
-    message.error(error.message || error)
-  }
+const toggleSettingsModal = () => {
+  const m = modal({
+    title: 'plugins.sourceConfig.name',
+    submit: false,
+    width: '60',
+    cancelText: 'common.close',
+  })
+  m.setContent(PluginSource).open()
 }
 
 const isAlreadyAdded = (id: string) => pluginsStore.getPluginById(id)
 
-getList()
+if (pluginsStore.pluginHub.length === 0) {
+  pluginsStore.updatePluginHub()
+}
 </script>
 
 <template>
-  <div class="plugin-hub">
-    <div v-if="loading" class="loading">
-      <Button type="text" loading></Button>
-    </div>
-    <template v-else>
-      <div class="header">
-        <Button type="text">{{ t('plugins.total') }} : {{ list.length }}</Button>
-        <Button @click="updateList" type="link" class="ml-auto">
-          {{ t('plugins.update') }}
-        </Button>
-      </div>
-      <Card v-for="plugin in list" :key="plugin.id" :title="plugin.name" class="plugin-item">
-        <div v-tips="plugin.description" class="description">{{ plugin.description }}</div>
-        <div class="action">
-          <Button v-if="isAlreadyAdded(plugin.id)" type="text" size="small">
-            {{ t('common.added') }}
-          </Button>
-          <Button v-else @click="handleAddPlugin(plugin)" type="link" size="small">
-            {{ t('common.add') }}
-          </Button>
-        </div>
-      </Card>
+  <ModalContainer :empty="filteredPlugins.length == 0">
+    <template #top>
+      <Input
+        v-model="keywords"
+        :border="false"
+        :placeholder="t('plugins.total') + ': ' + pluginsStore.pluginHub.length"
+        clearable
+        class="w-full"
+      >
+        <template #prefix>
+          <Icon icon="search" :size="22" />
+        </template>
+        <template #suffix>
+          <Button
+            v-tips="'plugins.update'"
+            icon="refresh"
+            :loading="pluginsStore.pluginHubLoading"
+            type="text"
+            @click="handleUpdatePluginHub"
+          />
+          <Button
+            v-tips="'plugins.sourceConfig.name'"
+            icon="settings3"
+            type="text"
+            @click="toggleSettingsModal"
+          />
+        </template>
+      </Input>
     </template>
-  </div>
+
+    <template #empty>
+      <Empty>
+        <template #description>
+          <Button
+            icon="refresh"
+            :loading="pluginsStore.pluginHubLoading"
+            type="primary"
+            size="small"
+            @click="handleUpdatePluginHub"
+          >
+            {{ $t('plugins.update') }}
+          </Button>
+        </template>
+      </Empty>
+    </template>
+
+    <template #body>
+      <div v-for="group in filteredPlugins" :key="group.name">
+        <div class="text-16 font-bold px-4 py-12 sticky top-0 z-9">{{ group.name }}</div>
+
+        <div class="grid grid-cols-2 gap-8">
+          <Card v-for="plugin in group.plugins" :key="plugin.id">
+            <template #title-prefix>
+              <div class="text-14 font-bold">{{ plugin.name }}</div>
+            </template>
+            <div class="flex items-center">
+              <div v-tips="plugin.description" class="flex-1 line-clamp-1 h-full text-12">
+                {{ plugin.description }}
+              </div>
+              <Button v-if="loadingSet.has(plugin.id)" loading type="text" size="small" />
+              <div v-else class="flex items-center">
+                <Button v-if="isAlreadyAdded(plugin.id)" icon="selected" type="text" size="small" />
+                <Button
+                  v-else
+                  type="text"
+                  icon="add"
+                  size="small"
+                  @click="handleAddPlugin(plugin)"
+                />
+              </div>
+            </div>
+          </Card>
+        </div>
+      </div>
+    </template>
+  </ModalContainer>
 </template>
-
-<style lang="less" scoped>
-.plugin-hub {
-  height: 100%;
-
-  .plugin-item {
-    display: inline-block;
-    margin: 4px;
-    font-size: 12px;
-    width: calc(33.333% - 8px);
-
-    .description {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .action {
-      text-align: right;
-    }
-  }
-}
-
-.loading {
-  display: flex;
-  justify-content: center;
-  height: 98%;
-}
-
-.header {
-  display: flex;
-  align-items: center;
-}
-</style>

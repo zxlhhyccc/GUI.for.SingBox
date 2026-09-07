@@ -1,122 +1,75 @@
 <script setup lang="ts">
-import { h, onMounted, ref, render } from 'vue'
-import { marked } from 'marked'
+import { computed } from 'vue'
 
 import useI18n from '@/lang'
-import { APP_TITLE, APP_VERSION, sampleID } from '@/utils'
-import CodeViewer from '@/components/CodeViewer/index.vue'
-import Divider from '@/components/Divider/index.vue'
 
-export type Options = {
+import MarkdownViewer from '@/components/MarkdownViewer/index.vue'
+
+export type ConfirmOptions = {
   type: 'text' | 'markdown'
+  cancelText?: string
+  okText?: string
 }
 
 interface Props {
   title: string
   message: string | Record<string, any>
-  options?: Options
+  options?: ConfirmOptions
   cancel?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   cancel: true,
-  options: () => ({ type: 'text' })
+  options: () => ({ type: 'text' }),
 })
 
 const emits = defineEmits(['confirm', 'cancel', 'finish'])
 
-const content = ref<string | Record<string, any>>('')
-const domContainers: (() => void)[] = []
-
 const { t } = useI18n.global
 
-marked.setOptions({ async: true })
-
-marked.use({
-  renderer: {
-    image({ href, title, text }) {
-      return `<img src="${href}" alt="${title || text}" style="max-width: 100%">`
-    },
-    link({ href, title }) {
-      return `<span onclick="Plugins.BrowserOpenURL('${href}')" style="color: var(--primary-color); cursor: pointer">${title || href}</span>`
-    },
-    blockquote({ tokens }) {
-      const text = this.parser.parse(tokens)
-      return `<div style="border-left: 4px solid var(--primary-color); padding: 8px; margin: 8px 0; display: flex; flex-direction: column; border-radius: 4px; background: var(--card-bg)">${text}</div>`
-    },
-    paragraph({ tokens }) {
-      const text = this.parser.parseInline(tokens)
-      return `<p style="margin: 0">${text}</p>`
-    },
-    list({ ordered, items }) {
-      const children = items.reduce((str, { tokens }) => {
-        const text = this.parser.parse(tokens)
-        return str + `<li style="padding: 0">${text}</li>`
-      }, '')
-      const tag = ordered ? 'ol' : 'ul'
-      return `<${tag} style="margin: 0; padding: 8px 16px">${children}</${tag}>`
-    },
-    hr() {
-      const containerId = 'Divider_' + sampleID()
-      const comp = h(Divider, () => APP_TITLE + '/' + APP_VERSION)
-      setTimeout(() => {
-        const div = document.getElementById(containerId)
-        if (!div) return
-        render(comp, div)
-        domContainers.push(() => render(null, div))
-      })
-      return `<div id="${containerId}"></div>`
-    },
-    code({ text, lang }) {
-      const containerId = 'CodeViewer_' + sampleID()
-      const comp = h(CodeViewer, { editable: false, modelValue: text, lang: lang as any })
-      setTimeout(() => {
-        const div = document.getElementById(containerId)
-        if (!div) return
-        render(comp, div)
-        domContainers.push(() => render(null, div))
-      })
-      return `<div id="${containerId}"></div>`
-    }
-  }
-})
-
-const renderContent = async () => {
+const content = computed(() => {
   if (typeof props.message !== 'string') {
-    content.value = JSON.stringify(props.message, null, 2)
-    return
+    return JSON.stringify(props.message, null, 2)
   }
   if (props.options.type === 'text') {
-    content.value = t(props.message)
-    return
+    return t(props.message)
   }
-  content.value = await marked.parse(props.message)
-}
-
-onMounted(renderContent)
+  return props.message
+})
 
 const handleConfirm = () => {
   emits('confirm', true)
   emits('finish')
-  domContainers.forEach((destroy) => destroy())
 }
 
 const handleCancel = () => {
   emits('cancel')
   emits('finish')
-  domContainers.forEach((destroy) => destroy())
 }
 </script>
 
 <template>
   <Transition name="slide-down" appear>
-    <div class="confirm">
-      <div class="title">{{ t(title) }}</div>
-      <div class="message select-text" v-html="content"></div>
-      <div class="form-action">
-        <Button v-if="cancel" @click="handleCancel" size="small">{{ t('common.cancel') }}</Button>
-        <Button @click="handleConfirm" size="small" type="primary">
-          {{ t('common.confirm') }}
+    <div class="gui-confirm flex flex-col p-8 rounded-8 shadow">
+      <div class="font-bold break-all px-4 py-8">{{ t(title) }}</div>
+      <div
+        v-if="options.type === 'markdown'"
+        class="flex-1 overflow-y-auto text-12 leading-relaxed p-6 break-all whitespace-pre-wrap select-text"
+      >
+        <MarkdownViewer :content="content" />
+      </div>
+      <div
+        v-else
+        class="flex-1 overflow-y-auto text-12 leading-relaxed p-6 break-all whitespace-pre-wrap select-text"
+      >
+        {{ content }}
+      </div>
+      <div class="form-action gap-4">
+        <Button v-if="cancel" size="small" @click="handleCancel">
+          {{ t(options.cancelText || 'common.cancel') }}
+        </Button>
+        <Button size="small" type="primary" @click="handleConfirm">
+          {{ t(options.okText || 'common.confirm') }}
         </Button>
       </div>
     </div>
@@ -124,29 +77,9 @@ const handleCancel = () => {
 </template>
 
 <style lang="less" scoped>
-.confirm {
+.gui-confirm {
   min-width: 340px;
   max-width: 60%;
-  padding: 8px;
   background: var(--toast-bg);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-  border-radius: 4px;
-  display: flex;
-  flex-direction: column;
-
-  .title {
-    font-weight: bold;
-    padding: 8px 4px;
-    word-break: break-all;
-  }
-  .message {
-    font-size: 12px;
-    line-height: 1.6;
-    padding: 6px;
-    word-break: break-all;
-    white-space: pre-wrap;
-    overflow-y: auto;
-    flex: 1;
-  }
 }
 </style>

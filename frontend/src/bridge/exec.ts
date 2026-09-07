@@ -1,18 +1,31 @@
-import { sampleID } from '@/utils'
-import * as App from '@wails/go/bridge/App'
+import * as Bridge from '@wails/go/bridge/App'
 import { EventsOn, EventsOff } from '@wails/runtime/runtime'
 
-type ExecOptions = {
-  convert: boolean
-  env: Record<string, any>
+import { sampleID } from '@/utils'
+
+interface ExecOptions {
+  PidFile?: string
+  LogFile?: string
+  Env?: Record<string, any>
+  StopOutputKeyword?: string
+  WorkingDirectory?: string
+  env?: Record<string, any>
+  stopOutputKeyword?: string
 }
 
-export const Exec = async (path: string, args: string[], options: Partial<ExecOptions> = {}) => {
-  const { flag, data } = await App.Exec(
-    path,
-    args,
-    Object.assign({}, { convert: false, env: {} }, options)
-  )
+const mergeExecOptions = (options: ExecOptions) => {
+  const mergedExecOpts = {
+    PidFile: options.PidFile ?? '',
+    LogFile: options.LogFile ?? '',
+    Env: options.Env ?? options.env ?? {},
+    StopOutputKeyword: options.StopOutputKeyword ?? options.stopOutputKeyword ?? '',
+    WorkingDirectory: options.WorkingDirectory ?? '',
+  }
+  return mergedExecOpts
+}
+
+export const Exec = async (path: string, args: string[], options: ExecOptions = {}) => {
+  const { flag, data } = await Bridge.Exec(path, args, mergeExecOptions(options))
   if (!flag) {
     throw data
   }
@@ -21,47 +34,58 @@ export const Exec = async (path: string, args: string[], options: Partial<ExecOp
 
 export const ExecBackground = async (
   path: string,
-  args: string[],
-  onOut: (out: string) => void,
-  onEnd: () => void,
-  options: Partial<ExecOptions> = {}
+  args: string[] = [],
+  onOut?: (out: string) => void,
+  onEnd?: (out: string) => void,
+  options: ExecOptions = {},
 ) => {
-  const outEvent = sampleID()
-  const endEvent = sampleID()
-  const { flag, data } = await App.ExecBackground(
+  const outEvent = (onOut && sampleID()) || ''
+  const endEvent = (onEnd && sampleID()) || (outEvent && sampleID()) || ''
+
+  const { flag, data } = await Bridge.ExecBackground(
     path,
     args,
     outEvent,
     endEvent,
-    Object.assign({}, { convert: false, env: {} }, options)
+    mergeExecOptions(options),
   )
   if (!flag) {
     throw data
   }
 
-  EventsOn(outEvent, (out: string) => {
-    onOut && onOut(out)
-  })
+  if (outEvent) {
+    EventsOn(outEvent, onOut!)
+  }
 
-  EventsOn(endEvent, () => {
-    onEnd && onEnd()
-    EventsOff(outEvent)
-    EventsOff(endEvent)
-  })
+  if (endEvent) {
+    EventsOn(endEvent, (data: any) => {
+      outEvent && EventsOff(outEvent)
+      EventsOff(endEvent)
+      onEnd?.(data)
+    })
+  }
 
   return Number(data)
 }
 
 export const ProcessInfo = async (pid: number) => {
-  const { flag, data } = await App.ProcessInfo(pid)
+  const { flag, data } = await Bridge.ProcessInfo(pid)
   if (!flag) {
     throw data
   }
   return data
 }
 
-export const KillProcess = async (pid: number) => {
-  const { flag, data } = await App.KillProcess(pid)
+export const ProcessMemory = async (pid: number) => {
+  const { flag, data } = await Bridge.ProcessMemory(pid)
+  if (!flag) {
+    throw data
+  }
+  return Number(data)
+}
+
+export const KillProcess = async (pid: number, timeout = 10) => {
+  const { flag, data } = await Bridge.KillProcess(pid, timeout)
   if (!flag) {
     throw data
   }

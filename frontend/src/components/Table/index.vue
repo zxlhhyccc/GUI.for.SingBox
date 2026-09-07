@@ -1,9 +1,9 @@
 <script lang="ts" setup>
-import { useI18n } from 'vue-i18n'
-import { ref, computed } from 'vue'
+import { ref, computed, isVNode, h } from 'vue'
 
+import vMenu from '@/directives/menu'
+import useI18n from '@/lang'
 import { getValue } from '@/utils'
-import type { Menu } from '@/stores'
 
 export type Column = {
   title: string
@@ -12,27 +12,28 @@ export type Column = {
   hidden?: boolean
   minWidth?: string
   sort?: (a: Record<string, any>, b: Record<string, any>) => number
-  customRender?: (v: { value: any; record: Record<string, any> }) => string
+  customRender?: (v: { value: any; record: Record<string, any> }) => any
 }
 
 interface Props {
-  menu?: Menu[]
+  menu?: App.Menu[]
   columns: Column[]
   dataSource: Record<string, any>[]
   sort?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  menu: () => []
+  menu: () => [],
+  sort: undefined,
 })
 
 const sortField = ref(props.sort)
 const sortReverse = ref(true)
 const sortFunc = computed(
-  () => props.columns.find((column) => column.key === sortField.value)?.sort
+  () => props.columns.find((column) => column.key === sortField.value)?.sort,
 )
 
-const { t } = useI18n()
+const { t } = useI18n.global
 
 const handleChangeSortField = (field: string) => {
   if (sortField.value === field) {
@@ -58,27 +59,40 @@ const tableData = computed(() => {
 const tableColumns = computed(() => {
   return props.columns.filter((column) => !column.hidden)
 })
+
+const renderCell = (column: Column, record: Recordable) => {
+  const value = getValue(record, column.key)
+  let result = column.customRender?.({ value, record }) ?? value ?? '-'
+  if (!isVNode(result)) {
+    result = h('div', String(result))
+  }
+  return result
+}
 </script>
 
 <template>
-  <div class="table">
-    <table>
+  <div class="gui-table overflow-auto">
+    <table class="w-full text-12 border-collapse">
       <thead>
-        <tr>
-          <th v-for="column in tableColumns" :key="column.key">
+        <tr class="sticky top-0 shadow">
+          <th
+            v-for="column in tableColumns"
+            :key="column.key"
+            class="px-4 py-8 whitespace-nowrap cursor-pointer"
+          >
             <div
-              @click="handleChangeSortField(column.key)"
               :style="{
                 justifyContent: { left: 'flext-start', center: 'center', right: 'flex-end' }[
                   column.align || 'left'
                 ],
-                minWidth: column.minWidth || 'auto'
+                minWidth: column.minWidth || 'auto',
               }"
-              class="title"
+              class="flex items-center"
+              @click="handleChangeSortField(column.key)"
             >
               {{ t(column.title) }}
               <div v-if="sortField === column.key && sortFunc">
-                <span class="title-sort"> {{ sortReverse ? '↑' : '↓' }} </span>
+                <span class="px-4"> {{ sortReverse ? '↑' : '↓' }} </span>
               </div>
             </div>
           </th>
@@ -86,21 +100,20 @@ const tableColumns = computed(() => {
       </thead>
       <tbody>
         <tr
-          v-for="data in tableData"
-          v-menu="menu.map((v) => ({ ...v, handler: () => v.handler?.(data) }))"
-          :key="data.id"
+          v-for="record in tableData"
+          :key="record.id"
+          v-menu="menu.map((v) => ({ ...v, handler: () => v.handler?.(record) }))"
+          class="transition duration-200"
         >
           <td
             v-for="column in tableColumns"
             :key="column.key"
             :style="{ textAlign: column.align || 'left' }"
-            class="select-text"
+            class="select-text whitespace-nowrap p-8"
           >
-            {{
-              (column.customRender
-                ? column.customRender({ value: getValue(data, column.key), record: data })
-                : getValue(data, column.key)) ?? '-'
-            }}
+            <slot :name="column.key" :="{ column, record }">
+              <component :is="renderCell(column, record)" />
+            </slot>
           </td>
         </tr>
       </tbody>
@@ -109,37 +122,14 @@ const tableColumns = computed(() => {
 </template>
 
 <style lang="less" scoped>
-.table {
-  overflow: auto;
-}
 table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-  text-align: left;
   thead {
     tr {
-      position: sticky;
-      top: 0;
       background: var(--table-tr-odd-bg);
-      box-shadow: 0 4px 4px rgba(0, 0, 0, 0.1);
-      th {
-        padding: 8px 4px;
-        white-space: nowrap;
-        cursor: pointer;
-        .title {
-          display: flex;
-          align-items: center;
-          &-sort {
-            padding: 0 4px;
-          }
-        }
-      }
     }
   }
   tbody {
     tr {
-      transition: all 0.2s;
       &:nth-child(odd) {
         background: var(--table-tr-odd-bg);
         &:hover {
@@ -151,10 +141,6 @@ table {
         &:hover {
           background: var(--table-tr-even-hover-bg);
         }
-      }
-      td {
-        padding: 8px;
-        white-space: nowrap;
       }
     }
   }

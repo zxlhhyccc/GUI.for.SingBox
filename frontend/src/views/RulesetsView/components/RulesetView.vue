@@ -1,11 +1,12 @@
 <script setup lang="ts">
+import { ref, inject, h } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ref, inject } from 'vue'
 
-import { useMessage } from '@/hooks'
-import { deepClone, ignoredError, isValidInlineRuleJson } from '@/utils'
-import { Readfile, Writefile } from '@/bridge'
-import { type RuleSetType, useRulesetsStore } from '@/stores'
+import { ReadFile, WriteFile } from '@/bridge'
+import { useRulesetsStore } from '@/stores'
+import { deepClone, ignoredError, isValidJson, message } from '@/utils'
+
+import Button from '@/components/Button/index.vue'
 
 interface Props {
   id: string
@@ -14,26 +15,25 @@ interface Props {
 const props = defineProps<Props>()
 
 const loading = ref(false)
-const ruleset = ref<RuleSetType>()
+const ruleset = ref<App.RuleSet>()
 const rulesetContent = ref<string>('')
-const initialized = ref(false)
 
 const handleCancel = inject('cancel') as any
 const handleSubmit = inject('submit') as any
 
 const { t } = useI18n()
-const { message } = useMessage()
 const rulesetsStore = useRulesetsStore()
 
 const handleSave = async () => {
   if (!ruleset.value) return
   loading.value = true
   try {
-    if (!isValidInlineRuleJson(rulesetContent.value)) {
+    if (!isValidJson(rulesetContent.value)) {
       throw 'syntax error'
     }
-    await Writefile(ruleset.value.path, rulesetContent.value)
-    handleSubmit()
+    await WriteFile(ruleset.value.path, rulesetContent.value)
+    await rulesetsStore.updateRuleset(ruleset.value.id)
+    await handleSubmit()
   } catch (error: any) {
     message.error(error)
     console.log(error)
@@ -46,37 +46,38 @@ const initContent = async () => {
   const r = rulesetsStore.getRulesetById(props.id)
   if (r) {
     ruleset.value = deepClone(r)
-    const content = (await ignoredError(Readfile, r.path)) || ''
+    const content = (await ignoredError(ReadFile, r.path)) || ''
     rulesetContent.value = content
   }
-  initialized.value = true
 }
 
 initContent()
+
+const modalSlots = {
+  cancel: () =>
+    h(
+      Button,
+      {
+        disabled: loading.value,
+        onClick: handleCancel,
+      },
+      () => t('common.cancel'),
+    ),
+  submit: () =>
+    h(
+      Button,
+      {
+        type: 'primary',
+        loading: loading.value,
+        onClick: handleSave,
+      },
+      () => t('common.save'),
+    ),
+}
+
+defineExpose({ modalSlots })
 </script>
 
 <template>
-  <div class="ruleset-view">
-    <CodeViewer v-if="initialized" v-model="rulesetContent" lang="json" editable class="rules" />
-    <div class="form-action">
-      <Button @click="handleCancel" :disabled="loading">
-        {{ t('common.cancel') }}
-      </Button>
-      <Button @click="handleSave" :loading="loading" type="primary">
-        {{ t('common.save') }}
-      </Button>
-    </div>
-  </div>
+  <CodeEditor v-model="rulesetContent" lang="json" editable class="h-full" />
 </template>
-
-<style lang="less" scoped>
-.ruleset-view {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-.rules {
-  flex: 1;
-  overflow-y: auto;
-}
-</style>

@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { ref, inject } from 'vue'
+import { ref, inject, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { useMessage } from '@/hooks'
-import { Readfile, Writefile } from '@/bridge'
-import { deepClone, ignoredError, omitArray, sampleID } from '@/utils'
-import { type SubscribeType, useSubscribesStore } from '@/stores'
+import { ReadFile, WriteFile } from '@/bridge'
+import { useSubscribesStore } from '@/stores'
+import { deepClone, ignoredError, message, omitArray, sampleID } from '@/utils'
+
+import Button from '@/components/Button/index.vue'
 
 interface Props {
-  sub: SubscribeType
+  sub: App.Subscription
 }
 
 const props = defineProps<Props>()
@@ -18,7 +19,6 @@ const proxiesText = ref('')
 const sub = ref(deepClone(props.sub))
 
 const { t } = useI18n()
-const { message } = useMessage()
 const subscribeStore = useSubscribesStore()
 
 const handleCancel = inject('cancel') as any
@@ -32,9 +32,9 @@ const handleSave = async () => {
     sub.value.proxies = proxiesWithId.map((v) => ({
       id: proxies.find((proxy) => proxy.id === v.__id_in_gui)?.id || sampleID(),
       tag: v.tag,
-      type: v.type
+      type: v.type,
     }))
-    await Writefile(path, JSON.stringify(omitArray(proxiesWithId, ['__id_in_gui']), null, 2))
+    await WriteFile(path, JSON.stringify(omitArray(proxiesWithId, ['__id_in_gui']), null, 2))
     await subscribeStore.editSubscribe(id, sub.value)
     handleSubmit()
   } catch (error: any) {
@@ -46,42 +46,44 @@ const handleSave = async () => {
 }
 
 const initProxiesText = async () => {
-  const content = (await ignoredError(Readfile, sub.value.path)) || '[]'
-  const proxies: SubscribeType['proxies'] = JSON.parse(content)
+  const content = (await ignoredError(ReadFile, sub.value.path)) || '[]'
+  const proxies: App.Subscription['proxies'] = JSON.parse(content)
   const proxiesWithId = proxies.map((proxy) => {
     return {
       __id_in_gui: sub.value.proxies.find((v) => v.tag === proxy.tag)?.id || sampleID(),
-      ...proxy
+      ...proxy,
     }
   })
   proxiesText.value = JSON.stringify(proxiesWithId, null, 2)
 }
 
 initProxiesText()
+
+const modalSlots = {
+  cancel: () =>
+    h(
+      Button,
+      {
+        disabled: loading.value,
+        onClick: handleCancel,
+      },
+      () => t('common.cancel'),
+    ),
+  submit: () =>
+    h(
+      Button,
+      {
+        type: 'primary',
+        loading: loading.value,
+        onClick: handleSave,
+      },
+      () => t('common.save'),
+    ),
+}
+
+defineExpose({ modalSlots })
 </script>
 
 <template>
-  <div class="proxies-view">
-    <CodeViewer v-model="proxiesText" lang="javascript" editable class="code" />
-    <div class="form-action">
-      <Button @click="handleCancel" :disabled="loading">
-        {{ t('common.cancel') }}
-      </Button>
-      <Button @click="handleSave" :loading="loading" type="primary">
-        {{ t('common.save') }}
-      </Button>
-    </div>
-  </div>
+  <CodeEditor v-model="proxiesText" lang="json" editable class="h-full" />
 </template>
-
-<style lang="less" scoped>
-.proxies-view {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-.code {
-  flex: 1;
-  overflow-y: auto;
-}
-</style>

@@ -1,150 +1,126 @@
-import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import { stringify, parse } from 'yaml'
+import { ref } from 'vue'
+import { parse } from 'yaml'
 
+import { ReadFile, WriteFile, Requests } from '@/bridge'
+import { DefaultSubscribeScript, SubscribesFilePath } from '@/constant/app'
+import { DefaultExcludeProtocols } from '@/constant/kernel'
+import { PluginTriggerEvent, RequestMethod, RequestProxyMode } from '@/enums/app'
 import { usePluginsStore } from '@/stores'
-import { Readfile, Writefile, HttpGet } from '@/bridge'
-import { SubscribesFilePath, DefaultExcludeProtocols } from '@/constant'
 import {
-  debounce,
   sampleID,
   isValidSubJson,
-  getUserAgent,
   isValidSubYAML,
   isValidBase64,
+  stringifyNoFolding,
   ignoredError,
   omitArray,
-  formatDate
+  asyncPool,
+  eventBus,
+  buildSmartRegExp,
+  GetRequestProxy,
+  migrateSubscribes,
 } from '@/utils'
 
-export type SubscribeType = {
-  id: string
-  name: string
-  upload: number
-  download: number
-  total: number
-  expire: number
-  updateTime: number
-  type: 'Http' | 'File' | 'Manual'
-  url: string
-  website: string
-  path: string
-  include: string
-  exclude: string
-  includeProtocol: string
-  excludeProtocol: string
-  proxyPrefix: string
-  disabled: boolean
-  inSecure: boolean
-  proxies: { id: string; tag: string; type: string }[]
-  userAgent: string
-  // Not Config
-  updating?: boolean
-}
-
 export const useSubscribesStore = defineStore('subscribes', () => {
-  const subscribes = ref<SubscribeType[]>([])
+  const subscribes = ref<App.Subscription[]>([])
 
   const setupSubscribes = async () => {
-    const data = await ignoredError(Readfile, SubscribesFilePath)
+    const data = await ignoredError(ReadFile, SubscribesFilePath)
     data && (subscribes.value = parse(data))
+
+    await migrateSubscribes(subscribes.value, saveSubscribes)
   }
 
-  const saveSubscribes = debounce(async () => {
+  const saveSubscribes = () => {
     const s = omitArray(subscribes.value, ['updating'])
-    await Writefile(SubscribesFilePath, stringify(s))
-  }, 500)
+    return WriteFile(SubscribesFilePath, stringifyNoFolding(s))
+  }
 
-  const addSubscribe = async (s: SubscribeType) => {
+  const addSubscribe = async (s: App.Subscription) => {
     subscribes.value.push(s)
     try {
       await saveSubscribes()
     } catch (error) {
-      subscribes.value.pop()
+      const idx = subscribes.value.indexOf(s)
+      if (idx !== -1) {
+        subscribes.value.splice(idx, 1)
+      }
       throw error
     }
   }
 
   const importSubscribe = async (name: string, url: string) => {
-    const id = sampleID()
-    await addSubscribe({
-      id: id,
-      name: name,
-      upload: 0,
-      download: 0,
-      total: 0,
-      expire: 0,
-      updateTime: 0,
-      type: 'Http',
-      url: url,
-      website: '',
-      path: `data/subscribes/${id}.json`,
-      include: '',
-      exclude: '',
-      includeProtocol: '',
-      excludeProtocol: DefaultExcludeProtocols,
-      proxyPrefix: '',
-      disabled: false,
-      inSecure: false,
-      userAgent: '',
-      proxies: []
-    })
+    await addSubscribe(getSubscribeTemplate(name, { url }))
   }
 
   const deleteSubscribe = async (id: string) => {
     const idx = subscribes.value.findIndex((v) => v.id === id)
     if (idx === -1) return
-    const backup = subscribes.value.splice(idx, 1)[0]
+    const backup = subscribes.value.splice(idx, 1)[0]!
     try {
       await saveSubscribes()
     } catch (error) {
       subscribes.value.splice(idx, 0, backup)
       throw error
     }
+
+    eventBus.emit('subscriptionChange', { id })
   }
 
-  const editSubscribe = async (id: string, s: SubscribeType) => {
+  const editSubscribe = async (id: string, s: App.Subscription) => {
     const idx = subscribes.value.findIndex((v) => v.id === id)
     if (idx === -1) return
-    const backup = subscribes.value.splice(idx, 1, s)[0]
+    const backup = subscribes.value.splice(idx, 1, s)[0]!
     try {
       await saveSubscribes()
     } catch (error) {
       subscribes.value.splice(idx, 1, backup)
       throw error
     }
+
+    eventBus.emit('subscriptionChange', { id })
   }
 
-  const _doUpdateSub = async (s: SubscribeType) => {
-    const pattern =
-      /upload=(-?)([E+.\d]+);\s*download=(-?)([E+.\d]+);\s*total=([E+.\d]+);\s*expire=(\d*)/
-    let userInfo = 'upload=0; download=0; total=0; expire=0'
+  const _doUpdateSub = async (s: App.Subscription, options: Partial<App.Subscription> = {}) => {
+    const userInfo: Recordable = {}
     let body = ''
     let proxies: Record<string, any>[] = []
 
     if (s.type === 'Manual') {
-      body = await Readfile(s.path)
+      body = await ReadFile(s.path)
     }
 
     if (s.type === 'File') {
-      body = await Readfile(s.url)
+      body = await ReadFile(s.url)
     }
 
     if (s.type === 'Http') {
-      const { headers: h, body: b } = await HttpGet(
-        s.url,
-        {
-          'User-Agent': s.userAgent || getUserAgent()
+      const requestProxyMode = options.requestProxyMode ?? s.requestProxyMode
+      const { headers: h, body: b } = await Requests({
+        method: options.requestMethod ?? s.requestMethod,
+        url: options.url ?? s.url,
+        headers: { ...s.header.request, ...options.header?.request },
+        autoTransformBody: false,
+        options: {
+          Insecure: options.inSecure ?? s.inSecure,
+          Proxy: await GetRequestProxy(
+            requestProxyMode === RequestProxyMode.Global ? undefined : requestProxyMode,
+            requestProxyMode === RequestProxyMode.Global
+              ? undefined
+              : (options.customProxy ?? s.customProxy),
+          ),
+          Timeout: options.requestTimeout ?? s.requestTimeout,
         },
-        { Insecure: s.inSecure }
-      )
-
-      h['Subscription-Userinfo'] && (userInfo = h['Subscription-Userinfo'])
-      if (typeof b !== 'string') {
-        body = JSON.stringify(b)
-      } else {
-        body = b
+      })
+      Object.assign(h, s.header.response, options.header?.response)
+      if (h['Subscription-Userinfo']) {
+        ;(h['Subscription-Userinfo'] as string).split(/\s*;\s*/).forEach((part) => {
+          const [key, value] = part.split('=') as [string, string]
+          userInfo[key] = parseInt(value) || 0
+        })
       }
+      body = b
     }
 
     if (isValidSubJson(body)) {
@@ -168,12 +144,17 @@ export const useSubscribesStore = defineStore('subscribes', () => {
     }
 
     if (s.type !== 'Manual') {
-      proxies = proxies.filter((v: any) => {
-        const flag1 = s.include ? new RegExp(s.include).test(v.tag) : true
-        const flag2 = s.exclude ? !new RegExp(s.exclude).test(v.tag) : true
-        const flag3 = s.includeProtocol ? new RegExp(s.includeProtocol).test(v.type) : true
-        const flag4 = s.excludeProtocol ? !new RegExp(s.excludeProtocol).test(v.type) : true
-        return flag1 && flag2 && flag3 && flag4
+      const r1 = s.include && buildSmartRegExp(s.include)
+      const r2 = s.exclude && buildSmartRegExp(s.exclude)
+      const r3 = s.includeProtocol && buildSmartRegExp(s.includeProtocol)
+      const r4 = s.excludeProtocol && buildSmartRegExp(s.excludeProtocol)
+
+      proxies = proxies.filter((v) => {
+        const flag1 = r1 ? r1.test(v.tag) : true
+        const flag2 = r2 ? r2.test(v.tag) : false
+        const flag3 = r3 ? r3.test(v.type) : true
+        const flag4 = r4 ? r4.test(v.type) : false
+        return flag1 && !flag2 && flag3 && !flag4
       })
 
       if (s.proxyPrefix) {
@@ -183,57 +164,129 @@ export const useSubscribesStore = defineStore('subscribes', () => {
       }
     }
 
-    await Writefile(s.path, JSON.stringify(proxies, null, 2))
-
-    const match = userInfo.match(pattern) || [0, 0, 0, 0, 0]
-
-    const [, , upload = 0, , download = 0, total = 0, expire = 0] = match
-    s.upload = Number(upload)
-    s.download = Number(download)
-    s.total = Number(total)
-    s.expire = Number(expire) * 1000
+    s.upload = userInfo.upload ?? 0
+    s.download = userInfo.download ?? 0
+    s.total = userInfo.total ?? 0
+    s.expire = userInfo.expire * 1000
     s.updateTime = Date.now()
     s.proxies = proxies.map(({ tag, type }) => {
       // Keep the original ID value of the proxy unchanged
       const id = s.proxies.find((v) => v.tag === tag)?.id || sampleID()
       return { id, tag, type }
     })
+
+    const fn = new window.AsyncFunction(
+      'proxies',
+      'subscription',
+      `${s.script}; return await ${PluginTriggerEvent.OnSubscribe}(proxies, subscription)`,
+    ) as (
+      proxies: Recordable[],
+      subscription: App.Subscription,
+    ) => Promise<{ proxies: Recordable[]; subscription: App.Subscription }>
+
+    const { proxies: _proxies, subscription } = await fn(proxies, s)
+
+    Object.assign(s, subscription)
+    s.proxies = _proxies.map(({ tag, type }) => {
+      // Keep the original ID value of the proxy unchanged
+      const id = s.proxies.find((v) => v.tag === tag)?.id || sampleID()
+      return { id, tag, type }
+    })
+
+    if (s.type === 'Http' || (s.type === 'File' && s.url !== s.path)) {
+      proxies = omitArray(_proxies, ['__id__', '__tmp__id__'])
+      await WriteFile(s.path, JSON.stringify(proxies, null, 2))
+    }
   }
 
-  const updateSubscribe = async (id: string) => {
+  const updateSubscribe = async (id: string, options: Partial<App.Subscription> = {}) => {
     const s = subscribes.value.find((v) => v.id === id)
     if (!s) throw id + ' Not Found'
     if (s.disabled) throw s.name + ' Disabled'
     try {
       s.updating = true
-      await _doUpdateSub(s)
+      await _doUpdateSub(s, options)
       await saveSubscribes()
-      return `Subscription [${s.name}] updated successfully.`
-    } catch (error) {
-      console.error('updateSubscribe: ', s.name, error)
-      throw error
+    } catch (error: any) {
+      throw `Failed to update subscription [${s.name}]. Reason: ${error.message || error}`
     } finally {
       s.updating = false
     }
+
+    eventBus.emit('subscriptionChange', { id })
+
+    return `Subscription [${s.name}] updated successfully.`
   }
 
   const updateSubscribes = async () => {
     let needSave = false
-    for (let i = 0; i < subscribes.value.length; i++) {
-      const s = subscribes.value[i]
-      if (s.disabled) continue
+
+    const update = async (s: App.Subscription) => {
+      const result = { ok: true, id: s.id, name: s.name, result: '' }
       try {
         s.updating = true
         await _doUpdateSub(s)
         needSave = true
+        result.result = `Subscription [${s.name}] updated successfully.`
+      } catch (error: any) {
+        result.ok = false
+        result.result = `Failed to update subscription [${s.name}]. Reason: ${error.message || error}`
       } finally {
         s.updating = false
       }
+      return result
     }
-    if (needSave) saveSubscribes()
+
+    const result = await asyncPool(
+      5,
+      subscribes.value.filter((v) => !v.disabled),
+      update,
+    )
+
+    if (needSave) await saveSubscribes()
+
+    eventBus.emit('subscriptionsChange', undefined)
+
+    return result.flatMap((v) => (v.ok && v.value) || [])
   }
 
   const getSubscribeById = (id: string) => subscribes.value.find((v) => v.id === id)
+
+  const getSubscribeTemplate = (name = '', options: { url?: string } = {}): App.Subscription => {
+    const id = sampleID()
+    return {
+      id: id,
+      name: name,
+      upload: 0,
+      download: 0,
+      total: 0,
+      expire: 0,
+      updateTime: 0,
+      type: 'Http',
+      url: options.url || '',
+      website: '',
+      path: `data/subscribes/${id}.json`,
+      include: '',
+      exclude: '',
+      includeProtocol: '',
+      excludeProtocol: DefaultExcludeProtocols,
+      proxyPrefix: '',
+      requestProxyMode: RequestProxyMode.Global,
+      customProxy: '',
+      disabled: false,
+      inSecure: false,
+      requestMethod: RequestMethod.Get,
+      requestTimeout: 15,
+      header: {
+        request: {
+          'User-Agent': 'clash.meta/mihomo',
+        },
+        response: {},
+      },
+      proxies: [],
+      script: DefaultSubscribeScript,
+    }
+  }
 
   return {
     subscribes,
@@ -245,6 +298,7 @@ export const useSubscribesStore = defineStore('subscribes', () => {
     updateSubscribe,
     updateSubscribes,
     getSubscribeById,
-    importSubscribe
+    importSubscribe,
+    getSubscribeTemplate,
   }
 })

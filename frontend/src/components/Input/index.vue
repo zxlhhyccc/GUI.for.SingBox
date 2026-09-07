@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, useTemplateRef } from 'vue'
 
+import { ClipboardGetText } from '@/bridge'
 import useI18n from '@/lang'
 import { debounce } from '@/utils'
 
 export interface Props {
-  modelValue: string | number
+  modelValue?: string | number | undefined
   autoSize?: boolean
   placeholder?: string
   type?: 'number' | 'text' | 'code'
@@ -13,45 +14,53 @@ export interface Props {
   size?: 'default' | 'small'
   editable?: boolean
   clearable?: boolean
+  allowPaste?: boolean
   autofocus?: boolean
-  width?: string
   min?: number
   max?: number
+  maxWidth?: boolean
   disabled?: boolean
   border?: boolean
   delay?: number
-  pl?: string
-  pr?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  modelValue: '',
   autoSize: false,
+  placeholder: undefined,
   type: 'text',
   lang: 'javascript',
   size: 'default',
   editable: false,
   autofocus: false,
+  allowPaste: false,
+  min: undefined,
+  max: undefined,
+  maxWidth: true,
   clearable: false,
-  width: '',
   disabled: false,
   border: true,
   delay: 0,
-  pl: '8px',
-  pr: '8px'
 })
 
-const emits = defineEmits(['update:modelValue', 'submit'])
+const emits = defineEmits(['change', 'update:modelValue', 'submit'])
 
 const showEdit = ref(false)
-const inputRef = ref<HTMLElement>()
-const innerClearable = computed(() => props.clearable && props.type !== 'code' && props.modelValue)
+const isComposing = ref(false)
+const inputRef = useTemplateRef('inputRef')
+const innerClearable = computed(
+  () => props.clearable && props.type !== 'code' && props.modelValue && !props.disabled,
+)
+const innerAllowPaste = computed(() => props.allowPaste && props.type !== 'code' && !props.disabled)
 
 const { t } = useI18n.global
 
-const onInput = debounce((e: any) => {
-  let val = e.target.value
+const validate = (val: string | number) => {
   if (props.type === 'number') {
     val = Number(val)
+    if (Number.isNaN(val)) {
+      throw new Error('Please enter a valid number')
+    }
     const { min, max } = props
     if (min !== undefined) {
       val = val < min ? min : val
@@ -60,128 +69,152 @@ const onInput = debounce((e: any) => {
       val = val > max ? max : val
     }
   }
+  return val
+}
+
+const emitInput = debounce((e: any) => {
+  const val = validate(e.target.value)
+  e.target.value = val
   emits('update:modelValue', val)
+  emits('change', val)
 }, props.delay)
 
+const onInput = (e: any) => {
+  if (isComposing.value || e.isComposing) return
+  emitInput(e)
+}
+
+const onCompositionStart = () => {
+  isComposing.value = true
+  emitInput.cancel()
+}
+
+const onCompositionEnd = (e: CompositionEvent) => {
+  isComposing.value = false
+  emitInput(e)
+}
+
+const onKeydownEnter = (e: KeyboardEvent) => {
+  if (isComposing.value || e.isComposing || e.keyCode === 229) return
+  nextTick(() => inputRef.value?.blur())
+}
+
 const handleClear = () => {
-  emits('update:modelValue', props.type === 'number' ? 0 : '')
+  const val = props.type === 'number' ? Math.min(props.min || 0, 0) : ''
+  emits('update:modelValue', val)
+  emits('change', val)
+  !props.editable && nextTick(() => inputRef.value?.focus())
+}
+
+const handlePaste = async () => {
+  const text = await ClipboardGetText()
+  const val = validate(text)
+  emits('update:modelValue', val)
+  emits('change', val)
 }
 
 const showInput = () => {
   if (props.disabled) return
   showEdit.value = true
-  nextTick(() => {
-    inputRef.value?.focus()
-  })
+  nextTick(() => inputRef.value?.focus())
 }
 
-const onSubmit = () => {
-  setTimeout(
-    () => {
-      emits('submit', props.modelValue)
-      props.editable && (showEdit.value = false)
-    },
-    props.clearable ? 100 : 0
-  )
+const onSubmit = (e: any) => {
+  const val = validate(e.target.value)
+  e.target.value = val
+  emits('submit', val)
+  props.editable && (showEdit.value = false)
 }
 
-onMounted(() => props.autofocus && inputRef.value?.focus())
+onMounted(() => props.autofocus && !props.editable && inputRef.value?.focus())
 
 defineExpose({
-  focus: () => inputRef.value?.focus()
+  focus: () => inputRef.value?.focus(),
 })
 </script>
 
 <template>
   <div
+    v-bind="$attrs"
     :class="{
-      disabled,
-      border: (border && !editable) || showEdit,
+      border: border && (!editable || showEdit),
       'auto-size': autoSize,
-      'limit-width': !autoSize && (!editable || showEdit),
       'bg-color': !editable || showEdit,
-      [size]: true
+      'is-editable': editable && !showEdit,
+      'no-max-width': !maxWidth,
+      [size]: true,
+      disabled,
     }"
     :style="{
-      height: type === 'code' ? '' : size === 'small' ? '26px' : '30px'
+      height: type === 'code' ? '' : size === 'small' ? '26px' : '30px',
     }"
-    class="input"
+    class="gui-input inline-flex items-center rounded-4 cursor-pointer px-4"
   >
-    <div v-if="editable && !showEdit" @click="showInput" class="editable">
-      <Icon v-if="disabled" icon="forbidden" class="disabled" />
-      {{ modelValue || t('common.none') }}
+    <div v-if="$slots.prefix" class="flex items-center shrink-0">
+      <slot name="prefix" v-bind="{ showInput }"></slot>
+    </div>
+    <Icon v-if="disabled" icon="forbidden" class="shrink-0" />
+    <div
+      v-if="editable && !showEdit"
+      class="w-full overflow-hidden whitespace-nowrap text-ellipsis"
+      :class="{ 'italic pr-4': !modelValue }"
+      @click="showInput"
+    >
+      <slot name="editable" v-bind="{ value: modelValue }">
+        {{ modelValue || t(placeholder || 'common.none') }}
+      </slot>
     </div>
     <template v-else>
-      <CodeViewer
+      <CodeEditor
         v-if="type === 'code'"
-        @change="(value: string) => onInput({ target: { value } })"
-        :value="modelValue"
+        :model-value="String(modelValue ?? '')"
         :lang="lang"
         :editable="!disabled"
-        class="code"
+        :placeholder="placeholder"
+        class="code w-full overflow-y-auto"
+        @change="(value: string) => onInput({ target: { value } })"
       />
       <input
         v-else
+        ref="inputRef"
         :value="modelValue"
         :placeholder="placeholder"
         :type="type"
-        :style="{
-          width: !autoSize ? '0' : width,
-          paddingLeft: pl,
-          paddingRight: clearable ? '0' : pr
-        }"
         :disabled="disabled"
-        @input="($event) => onInput($event)"
-        @blur="onSubmit"
-        @keydown.enter="inputRef?.blur"
         autocomplete="off"
-        ref="inputRef"
+        class="flex-1 inline-block py-6 outline-none border-0 bg-transparent w-0"
+        @input="onInput"
+        @compositionstart="onCompositionStart"
+        @compositionend="onCompositionEnd"
+        @blur="onSubmit"
+        @keydown.enter="onKeydownEnter"
+        @keydown.esc.stop.prevent="inputRef?.blur"
       />
       <Button
         v-if="innerClearable"
-        @click="handleClear"
-        :icon-size="12"
         icon="clear2"
         type="text"
         size="small"
+        @mousedown.prevent
+        @click="handleClear"
       />
+      <Button v-if="innerAllowPaste" icon="paste" type="text" size="small" @click="handlePaste" />
     </template>
-    <slot name="extra"></slot>
+    <div v-if="$slots.suffix" class="flex items-center shrink-0">
+      <slot name="suffix" v-bind="{ showInput }"></slot>
+    </div>
   </div>
 </template>
 
 <style lang="less" scoped>
-.input {
-  display: flex;
-  align-items: center;
-  border-radius: 4px;
-  overflow: hidden;
-  cursor: pointer;
+.gui-input {
+  min-width: 220px;
   border: 1px solid transparent;
-  .editable {
-    flex: 1;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    max-width: 210px;
-    .disabled {
-      margin-bottom: -2px;
-      flex-shrink: 0;
-    }
-  }
   input {
-    flex: 1;
     color: var(--input-color);
-    display: inline-block;
-    padding: 6px 0;
-    border: none;
-    outline: none;
-    background: transparent;
   }
   .code {
-    width: 100%;
     max-height: 300px;
-    overflow-y: auto;
   }
 }
 
@@ -189,8 +222,12 @@ defineExpose({
   background: var(--input-bg);
 }
 
-.limit-width {
-  width: 210px;
+.is-editable {
+  min-width: 0;
+}
+
+.is-editable:not(.no-max-width) {
+  max-width: 220px;
 }
 
 .auto-size {
@@ -198,6 +235,7 @@ defineExpose({
 }
 
 .disabled {
+  cursor: not-allowed;
   input {
     cursor: not-allowed;
   }

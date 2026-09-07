@@ -1,35 +1,82 @@
-import * as App from '@wails/go/bridge/App'
-import type { TrayContent } from '@/constant'
+import * as Bridge from '@wails/go/bridge/App'
+import {
+  IsNotificationAvailable,
+  RequestNotificationAuthorization,
+  SendNotification,
+} from '@wails/runtime/runtime'
 
-export const RestartApp = App.RestartApp
+import { sampleID } from '@/utils'
 
-export const ExitApp = App.ExitApp
+export const RestartApp = Bridge.RestartApp
 
-export const ShowMainWindow = App.ShowMainWindow
+export const ExitApp = Bridge.ExitApp
 
-export const UpdateTray = async (tray: TrayContent) => {
-  const { icon = '', title = '', tooltip = '' } = tray
-  await App.UpdateTray({ icon, title, tooltip })
+export const ShowMainWindow = Bridge.ShowMainWindow
+
+export const UpdateTray = Bridge.UpdateTray
+
+export const UpdateTrayMenus = Bridge.UpdateTrayMenus
+
+export const UpdateTrayAndMenus = Bridge.UpdateTrayAndMenus
+
+export const GetEnv = <T extends string | undefined = undefined>(
+  key?: T,
+): Promise<T extends string ? string : App.AppEnv> => {
+  return Bridge.GetEnv(key || '')
 }
 
-export const UpdateTrayMenus = App.UpdateTrayMenus
+export const IsStartup = Bridge.IsStartup
 
-export const Notify = async (title: string, message: string, icon = '') => {
-  const icons: Record<string, string> = {
-    success: 'data/.cache/imgs/notify_success.png',
-    error: 'data/.cache/imgs/notify_error.png'
+export const GetSystemProxy = async () => {
+  const { flag, data } = await Bridge.GetSystemProxy()
+  if (!flag) {
+    throw data
   }
-  await App.Notify(title, message, icons[icon] || 'data/.cache/imgs/notify_normal.ico')
+  return data
 }
 
-export const GetEnv = App.GetEnv
+export const SetSystemProxy = async (
+  enable: boolean,
+  server: string,
+  proxyType: 'mixed' | 'http' | 'socks' = 'mixed',
+  bypass = '',
+  services: string[] = [],
+) => {
+  const { flag, data } = await Bridge.SetSystemProxy(enable, server, proxyType, bypass, services)
+  if (!flag) {
+    throw data
+  }
+  return data
+}
 
-export const IsStartup = App.IsStartup
+export const SetSystemDNS = async (servers: string, services: string[] = []) => {
+  const { flag, data } = await Bridge.SetSystemDNS(servers, services)
+  if (!flag) {
+    throw data
+  }
+  return data
+}
+
+export const GetSystemProxyBypass = async () => {
+  const { flag, data } = await Bridge.GetSystemProxyBypass()
+  if (!flag) {
+    throw data
+  }
+  return data
+}
 
 export const GetInterfaces = async () => {
-  const { flag, data } = await App.GetInterfaces()
+  const { flag, data } = await Bridge.GetInterfaces()
   if (!flag) {
     throw data
   }
   return data.split('|')
+}
+
+export const Notify = async (title: string, body: string) => {
+  if (!(await IsNotificationAvailable())) {
+    throw new Error('Notifications not available on this platform')
+  }
+  await RequestNotificationAuthorization()
+  await SendNotification({ id: sampleID(), title, body })
 }

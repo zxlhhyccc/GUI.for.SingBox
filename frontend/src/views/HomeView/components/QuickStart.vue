@@ -1,117 +1,91 @@
 <script setup lang="ts">
+import { h, inject, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { computed, inject, ref } from 'vue'
 
-import { useMessage } from '@/hooks'
-import * as Defaults from '@/constant'
-import { sampleID } from '@/utils'
-import {
-  useProfilesStore,
-  useAppSettingsStore,
-  useSubscribesStore,
-  type SubscribeType,
-  type ProfileType
-} from '@/stores'
+import { useProfilesStore, useAppSettingsStore, useSubscribesStore } from '@/stores'
+import { message, sampleID } from '@/utils'
+
+import Button from '@/components/Button/index.vue'
 
 const { t } = useI18n()
-const { message } = useMessage()
 const subscribeStore = useSubscribesStore()
 const profilesStore = useProfilesStore()
 const appSettingsStore = useAppSettingsStore()
 
 const url = ref('')
+const name = ref('')
 const loading = ref(false)
 
 const handleCancel = inject('cancel') as any
+const handleSubmit = inject('submit') as any
 
-const canSubmit = computed(() => url.value && url.value.toLocaleLowerCase().startsWith('http'))
-
-const handleSubmit = async () => {
-  const profileID = sampleID()
-  const subscribeID = sampleID()
-
-  const profile: ProfileType = {
-    id: profileID,
-    name: profileID,
-    generalConfig: Defaults.GeneralConfigDefaults(),
-    advancedConfig: Defaults.AdvancedConfigDefaults(),
-    tunConfig: Defaults.TunConfigDefaults(),
-    dnsConfig: Defaults.DnsConfigDefaults(),
-    proxyGroupsConfig: Defaults.ProxyGroupsConfigDefaults(),
-    rulesConfig: Defaults.RulesConfigDefaults(),
-    dnsRulesConfig: Defaults.DnsRulesConfigDefaults(),
-    mixinConfig: Defaults.MixinConfigDefaults(),
-    scriptConfig: Defaults.ScriptConfigDefaults()
+const handleSave = async () => {
+  if (!name.value) {
+    name.value = sampleID()
   }
 
-  profile.proxyGroupsConfig[0].use = [subscribeID]
-  profile.proxyGroupsConfig[1].use = [subscribeID]
-
-  const subscribe: SubscribeType = {
-    id: subscribeID,
-    name: subscribeID,
-    url: url.value,
-    upload: 0,
-    download: 0,
-    total: 0,
-    expire: 0,
-    updateTime: 0,
-    type: 'Http',
-    website: '',
-    path: `data/subscribes/${subscribeID}.json`,
-    include: '',
-    exclude: '',
-    includeProtocol: '',
-    excludeProtocol: Defaults.DefaultExcludeProtocols,
-    proxyPrefix: '',
-    disabled: false,
-    inSecure: false,
-    userAgent: '',
-    proxies: []
-  }
+  const sub = subscribeStore.getSubscribeTemplate(name.value, { url: url.value })
 
   loading.value = true
 
   try {
-    await subscribeStore.addSubscribe(subscribe)
-
-    await profilesStore.addProfile(profile)
-
-    appSettingsStore.app.kernel.profile = profile.name
+    await subscribeStore.addSubscribe(sub)
+    await subscribeStore.updateSubscribe(sub.id)
   } catch (error: any) {
+    loading.value = false
     console.log(error)
     message.error(error)
+    subscribeStore.deleteSubscribe(sub.id)
     return
   }
 
-  message.success('home.initSuccessful')
+  const profile = profilesStore.getProfileTemplate(name.value)
 
-  try {
-    await subscribeStore.updateSubscribe(subscribe.id)
-  } catch (error: any) {
-    console.log(error)
-    message.warn(error, 10_000)
-    message.warn('home.initFailed', 10_000)
+  if (profile.outbounds[0] && profile.outbounds[1]) {
+    profile.outbounds[0].outbounds.push({ id: sub.id, tag: sub.id, type: 'Subscription' })
+    profile.outbounds[1].outbounds.push({ id: sub.id, tag: sub.id, type: 'Subscription' })
   }
+
+  await profilesStore.addProfile(profile)
+
+  appSettingsStore.app.kernel.profile = profile.id
+
+  message.success('home.initSuccessful')
 
   loading.value = false
 
-  handleCancel()
+  handleSubmit()
 }
+
+const modalSlots = {
+  cancel: () =>
+    h(
+      Button,
+      {
+        disabled: loading.value,
+        onClick: handleCancel,
+      },
+      () => t('common.cancel'),
+    ),
+  submit: () =>
+    h(
+      Button,
+      {
+        type: 'primary',
+        disabled: !/^https?:\/\//.test(url.value),
+        loading: loading.value,
+        onClick: handleSave,
+      },
+      () => t('common.save'),
+    ),
+}
+
+defineExpose({ modalSlots })
 </script>
 
 <template>
-  <div class="form-item">
-    <div>{{ t('subscribe.url') }} *</div>
-    <Input v-model="url" auto-size placeholder="http(s)://" autofocus style="width: 76%" />
-  </div>
-
-  <div class="form-action">
-    <Button @click="handleCancel" :disabled="loading" type="text">{{ t('common.cancel') }}</Button>
-    <Button @click="handleSubmit" :disabled="!canSubmit" :loading="loading" type="primary">
-      {{ t('common.save') }}
-    </Button>
+  <div class="flex gap-4">
+    <Input v-model="name" :placeholder="$t('profile.name')" auto-size clearable class="w-[25%]" />
+    <Input v-model="url" placeholder="http(s)://" autofocus clearable allow-paste class="w-[75%]" />
   </div>
 </template>
-
-<style lang="less" scoped></style>

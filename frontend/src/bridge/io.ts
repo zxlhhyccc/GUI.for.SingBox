@@ -1,43 +1,48 @@
-import * as App from '@wails/go/bridge/App'
+import * as Bridge from '@wails/go/bridge/App'
 
-type IOOptions = {
+interface IOOptions {
   Mode?: 'Binary' | 'Text'
+  Range?: string
 }
 
-export const Writefile = async (path: string, content: string, options: IOOptions = {}) => {
-  const { flag, data } = await App.Writefile(path, content, { Mode: 'Text', ...options })
+export const WriteFile = async (path: string, content: string, options: IOOptions = {}) => {
+  const { flag, data } = await Bridge.WriteFile(path, content, {
+    Mode: 'Text',
+    Range: '',
+    ...options,
+  })
   if (!flag) {
     throw data
   }
   return data
 }
 
-export const Readfile = async (path: string, options: IOOptions = {}) => {
-  const { flag, data } = await App.Readfile(path, { Mode: 'Text', ...options })
+export const ReadFile = async (path: string, options: IOOptions = {}) => {
+  const { flag, data } = await Bridge.ReadFile(path, { Mode: 'Text', Range: '', ...options })
   if (!flag) {
     throw data
   }
   return data
 }
 
-export const Movefile = async (source: string, target: string) => {
-  const { flag, data } = await App.Movefile(source, target)
+export const MoveFile = async (source: string, target: string) => {
+  const { flag, data } = await Bridge.MoveFile(source, target)
   if (!flag) {
     throw data
   }
   return data
 }
 
-export const Removefile = async (path: string) => {
-  const { flag, data } = await App.Removefile(path)
+export const RemoveFile = async (path: string) => {
+  const { flag, data } = await Bridge.RemoveFile(path)
   if (!flag) {
     throw data
   }
   return data
 }
 
-export const Copyfile = async (source: string, target: string) => {
-  const { flag, data } = await App.Copyfile(source, target)
+export const CopyFile = async (source: string, target: string) => {
+  const { flag, data } = await Bridge.CopyFile(source, target)
   if (!flag) {
     throw data
   }
@@ -45,31 +50,39 @@ export const Copyfile = async (source: string, target: string) => {
 }
 
 export const FileExists = async (path: string) => {
-  const { flag, data } = await App.FileExists(path)
+  const { flag, data } = await Bridge.FileExists(path)
   if (!flag) {
     throw data
   }
   return data === 'true'
 }
 
+export const FileSHA256 = async (path: string) => {
+  const { flag, data } = await Bridge.FileSHA256(path)
+  if (!flag) {
+    throw data
+  }
+  return data
+}
+
 export const AbsolutePath = async (path: string) => {
-  const { flag, data } = await App.AbsolutePath(path)
+  const { flag, data } = await Bridge.AbsolutePath(path)
   if (!flag) {
     throw data
   }
   return data
 }
 
-export const Makedir = async (path: string) => {
-  const { flag, data } = await App.Makedir(path)
+export const MakeDir = async (path: string) => {
+  const { flag, data } = await Bridge.MakeDir(path)
   if (!flag) {
     throw data
   }
   return data
 }
 
-export const Readdir = async (path: string) => {
-  const { flag, data } = await App.Readdir(path)
+export const ReadDir = async (path: string) => {
+  const { flag, data } = await Bridge.ReadDir(path)
   if (!flag) {
     throw data
   }
@@ -77,13 +90,29 @@ export const Readdir = async (path: string) => {
     .split('|')
     .filter((v) => v)
     .map((v) => {
-      const [name, size, isDir] = v.split(',')
+      const [name, size, isDir] = v.split(',') as [string, string, string]
       return { name, size: Number(size), isDir: isDir === 'true' }
     })
 }
 
+export const OpenDir = async (path: string) => {
+  const { flag, data } = await Bridge.OpenDir(path)
+  if (!flag) {
+    throw data
+  }
+  return data
+}
+
+export const OpenURI = async (uri: string) => {
+  const { flag, data } = await Bridge.OpenURI(uri)
+  if (!flag) {
+    throw data
+  }
+  return data
+}
+
 export const UnzipZIPFile = async (path: string, output: string) => {
-  const { flag, data } = await App.UnzipZIPFile(path, output)
+  const { flag, data } = await Bridge.UnzipZIPFile(path, output)
   if (!flag) {
     throw data
   }
@@ -91,7 +120,15 @@ export const UnzipZIPFile = async (path: string, output: string) => {
 }
 
 export const UnzipGZFile = async (path: string, output: string) => {
-  const { flag, data } = await App.UnzipGZFile(path, output)
+  const { flag, data } = await Bridge.UnzipGZFile(path, output)
+  if (!flag) {
+    throw data
+  }
+  return data
+}
+
+export const UnzipTarGZFile = async (path: string, output: string) => {
+  const { flag, data } = await Bridge.UnzipTarGZFile(path, output)
   if (!flag) {
     throw data
   }

@@ -2,12 +2,14 @@ import type { Plugin, App } from 'vue'
 import { vDraggable } from 'vue-draggable-plus'
 
 import menu from './menu'
+import platform from './platform'
 import tips from './tips'
 
 const directives: any = {
   menu,
   tips,
-  draggable: vDraggable
+  platform,
+  draggable: vDraggable,
 }
 
 export default {
@@ -15,5 +17,5 @@ export default {
     Object.keys(directives).forEach((key) => {
       app.directive(key, directives[key])
     })
-  }
+  },
 } as Plugin

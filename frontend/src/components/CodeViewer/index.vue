@@ -1,81 +1,190 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import CodeMirror from 'vue-codemirror6'
-import { json, jsonParseLinter } from '@codemirror/lang-json'
-import { yaml } from '@codemirror/lang-yaml'
-import { oneDark } from '@codemirror/theme-one-dark'
-import { javascript } from '@codemirror/lang-javascript'
-import { autocompletion } from '@codemirror/autocomplete'
+import Prism from 'prismjs'
+import { computed } from 'vue'
 
-import { Theme } from '@/constant'
-import { getCompletions } from '@/utils'
-import { useAppSettingsStore } from '@/stores'
+import { ClipboardSetText } from '@/bridge'
+import { message } from '@/utils'
+
+import 'prismjs/components/prism-markup'
+import 'prismjs/components/prism-css'
+import 'prismjs/components/prism-clike'
+import 'prismjs/components/prism-javascript'
+import 'prismjs/components/prism-typescript'
+import 'prismjs/components/prism-json'
+import 'prismjs/components/prism-yaml'
+import 'prismjs/components/prism-bash'
+import 'prismjs/components/prism-powershell'
+import 'prismjs/components/prism-go'
+import 'prismjs/components/prism-markdown'
+import 'prismjs/components/prism-diff'
 
 interface Props {
-  editable?: boolean
-  lang?: 'json' | 'javascript' | 'yaml'
-  plugin?: Record<string, any>
+  modelValue?: string
+  lang?: string
+  copyable?: boolean
 }
 
-const model = defineModel<string>({ default: '' })
-const emit = defineEmits(['change'])
 const props = withDefaults(defineProps<Props>(), {
-  lang: 'json'
+  modelValue: '',
+  lang: '',
+  copyable: true,
 })
 
-const ready = ref(false)
-const appSettings = useAppSettingsStore()
+const langAliases: Record<string, string> = {
+  cjs: 'javascript',
+  js: 'javascript',
+  jsx: 'javascript',
+  mjs: 'javascript',
+  ts: 'typescript',
+  tsx: 'typescript',
+  yml: 'yaml',
+  sh: 'bash',
+  shell: 'bash',
+  zsh: 'bash',
+  pwsh: 'powershell',
+  ps1: 'powershell',
+  html: 'markup',
+  svg: 'markup',
+  vue: 'markup',
+  xml: 'markup',
+  md: 'markdown',
+  patch: 'diff',
+}
 
-const lang = { json, javascript, yaml }[props.lang]?.()
-const linter = props.lang === 'json' ? jsonParseLinter() : undefined
+const plainLangs = new Set(['', 'none', 'plain', 'plaintext', 'text', 'txt'])
 
-const completion = computed(() =>
-  autocompletion({
-    override: props.lang === 'javascript' ? getCompletions(props.plugin) : null,
-    optionClass: () => 'codeviewer-custom-font',
-    tooltipClass: () => 'codeviewer-custom-font'
-  })
-)
+const escapeHtml = (str: string) =>
+  str
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
 
-const extensions = computed(() =>
-  appSettings.themeMode === Theme.Dark ? [oneDark, completion.value] : [completion.value]
-)
+const rawLang = computed(() => props.lang.trim())
 
-watch(model, (v) => emit('change', v))
+const normalizedLang = computed(() => {
+  const lang = rawLang.value.toLowerCase().split(/\s+/)[0] || ''
+  if (plainLangs.has(lang)) return ''
+  return langAliases[lang] || lang
+})
 
-onMounted(() => setTimeout(() => (ready.value = true), 100))
+const displayLang = computed(() => rawLang.value || 'text')
+const grammar = computed(() => Prism.languages[normalizedLang.value])
+
+const html = computed(() => {
+  const code = props.modelValue || ''
+  if (!grammar.value || !normalizedLang.value) return escapeHtml(code)
+  return Prism.highlight(code, grammar.value, normalizedLang.value)
+})
+
+const onCopy = async () => {
+  const ok = await ClipboardSetText(props.modelValue || '')
+  ok ? message.success('common.copied') : message.error('ClipboardSetText Error')
+}
 </script>
 
 <template>
-  <CodeMirror
-    v-if="ready"
-    v-model="model"
-    :lang="lang"
-    :linter="linter"
-    :readonly="!editable"
-    :extensions="extensions"
-    tab
-    basic
-    wrap
-    style="background: #fff"
-  />
-  <Button v-else loading type="link" style="display: flex; justify-content: center" />
+  <div class="code-block-viewer my-8 rounded-6">
+    <div class="code-block-toolbar flex items-center justify-between gap-8 min-h-32 px-8 py-4">
+      <div class="inline-flex min-w-0 items-center gap-4 text-12">
+        <Icon icon="code" :size="14" color="currentColor" />
+        <span>{{ displayLang }}</span>
+      </div>
+      <Button v-if="copyable" type="text" size="small" icon="copy" @click="onCopy">
+        {{ $t('common.copy') }}
+      </Button>
+    </div>
+    <pre
+      class="m-0 overflow-auto px-12 py-8 select-text"
+      :class="normalizedLang ? `language-${normalizedLang}` : 'language-plain'"
+    ><code class="code-block-code" v-html="html"></code></pre>
+  </div>
 </template>
 
 <style lang="less" scoped>
-:deep(.cm-editor) {
-  height: 100%;
-}
-:deep(.cm-scroller) {
-  font-family: monaco, Consolas, Menlo, Courier, monospace;
-  font-size: 14px;
-}
-:deep(.cm-focused) {
-  outline: none;
+.code-block-viewer {
+  border: 1px solid var(--divider-color);
+  background: var(--card-bg);
 }
 
-:deep(.codeviewer-custom-font) {
+.code-block-toolbar {
+  color: var(--card-color);
+  border-bottom: 1px solid var(--divider-color);
+}
+
+.code-block-code {
   font-family: monaco, Consolas, Menlo, Courier, monospace;
   font-size: 14px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+:deep(.token.comment),
+:deep(.token.prolog),
+:deep(.token.doctype),
+:deep(.token.cdata) {
+  color: #708090;
+}
+
+:deep(.token.punctuation) {
+  color: #999;
+}
+
+:deep(.token.namespace) {
+  opacity: 0.7;
+}
+
+:deep(.token.property),
+:deep(.token.tag),
+:deep(.token.boolean),
+:deep(.token.number),
+:deep(.token.constant),
+:deep(.token.symbol),
+:deep(.token.deleted) {
+  color: #d73a49;
+}
+
+:deep(.token.selector),
+:deep(.token.attr-name),
+:deep(.token.string),
+:deep(.token.char),
+:deep(.token.builtin),
+:deep(.token.inserted) {
+  color: #22863a;
+}
+
+:deep(.token.operator),
+:deep(.token.entity),
+:deep(.token.url),
+:deep(.language-css .token.string),
+:deep(.style .token.string) {
+  color: #005cc5;
+}
+
+:deep(.token.atrule),
+:deep(.token.attr-value),
+:deep(.token.keyword) {
+  color: #d73a49;
+}
+
+:deep(.token.function),
+:deep(.token.class-name) {
+  color: #6f42c1;
+}
+
+:deep(.token.regex),
+:deep(.token.important),
+:deep(.token.variable) {
+  color: #e36209;
+}
+
+:deep(.token.important),
+:deep(.token.bold) {
+  font-weight: 700;
+}
+
+:deep(.token.italic) {
+  font-style: italic;
 }
 </style>

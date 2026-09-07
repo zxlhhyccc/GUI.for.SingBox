@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import type { IconType } from '@/components/Icon/index.vue'
+import { type IconName } from '@/components/Icon/icons'
 
 interface Props {
   type?: 'primary' | 'normal' | 'link' | 'text'
   size?: 'default' | 'small' | 'large'
   iconSize?: number
   iconColor?: string
-  icon?: IconType
+  icon?: IconName
   loading?: boolean
   disabled?: boolean
 }
@@ -14,48 +14,46 @@ interface Props {
 withDefaults(defineProps<Props>(), {
   type: 'normal',
   size: 'default',
+  iconSize: undefined,
+  iconColor: undefined,
+  icon: undefined,
   loading: false,
-  disabled: false
+  disabled: false,
 })
 </script>
 
 <template>
-  <div :class="[type, size, { disabled, loading }]" class="btn">
-    <Icon v-if="loading" :fill="`var(--btn-${type}-color)`" icon="loading" class="rotation" />
+  <div
+    :class="[type, size, { 'pointer-events-none': disabled || loading }]"
+    class="gui-button inline-flex items-center justify-center text-center align-middle rounded-6 text-14 text-nowrap cursor-pointer px-12 py-6 duration-200"
+  >
+    <Icon
+      v-if="loading"
+      color="currentColor"
+      :size="size === 'small' ? 14 : 16"
+      icon="loading"
+      class="rotation"
+    />
     <template v-else>
-      <Icon v-if="disabled" :fill="`var(--btn-${type}-color)`" icon="forbidden" class="disabled" />
+      <Icon
+        v-if="disabled"
+        color="currentColor"
+        icon="forbidden"
+        class="pointer-events-none shrink-0 mr-4"
+      />
       <Icon
         v-if="icon"
         :icon="icon"
         :size="iconSize"
-        :fill="iconColor || `var(--btn-${type}-color)`"
+        :color="iconColor || 'currentColor'"
         :class="$slots.default ? 'mr-4' : ''"
       />
     </template>
-    <slot />
+    <slot></slot>
   </div>
 </template>
 
 <style lang="less" scoped>
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  vertical-align: middle;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  padding: 6px 12px;
-  margin: 2px;
-  transition: all 0.2s;
-}
-
-.disabled,
-.loading {
-  pointer-events: none;
-}
-
 .normal {
   color: var(--btn-normal-color);
   background-color: var(--btn-normal-bg);
@@ -114,9 +112,5 @@ withDefaults(defineProps<Props>(), {
 .large {
   padding: 8px 12px;
   font-size: 16px;
-}
-
-.rotation {
-  animation: rotate 2s infinite linear;
 }
 </style>

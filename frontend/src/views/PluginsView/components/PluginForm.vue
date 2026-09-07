@@ -1,65 +1,87 @@
 <script setup lang="ts">
-import { ref, inject } from 'vue'
+import { ref, inject, computed, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { useBool, useMessage } from '@/hooks'
-import { deepClone, ignoredError, sampleID } from '@/utils'
-import { usePluginsStore, type PluginType } from '@/stores'
-import { PluginsTriggerOptions, DraggableOptions, PluginTrigger } from '@/constant'
+import { PluginsTriggerOptions, DraggableOptions } from '@/constant/app'
+import { PluginTrigger } from '@/enums/app'
+import { useBool } from '@/hooks'
+import { usePluginsStore } from '@/stores'
+import { deepClone, message, sampleID } from '@/utils'
+
+import Button from '@/components/Button/index.vue'
 
 interface Props {
   id?: string
-  isUpdate?: boolean
 }
 
-const props = withDefaults(defineProps<Props>(), {
-  id: '',
-  isUpdate: false
-})
+const props = defineProps<Props>()
 
+const official = computed(() => pluginsStore.findPluginInHubById(plugin.value.id))
 const loading = ref(false)
-const oldPluginTriggers = ref()
 const pluginID = sampleID()
-const plugin = ref<PluginType>({
+const plugin = ref<App.Plugin>({
   id: pluginID,
+  version: 'v1.0.0',
   name: '',
   description: '',
+  tags: [],
+  group: '',
   type: 'File',
   url: '',
   status: 0,
   path: `data/plugins/plugin-${pluginID}.js`,
   triggers: [PluginTrigger.OnManual],
+  hasUI: false,
   menus: {},
+  context: {
+    profiles: {},
+    subscriptions: {},
+    rulesets: {},
+    plugins: {},
+    scheduledtasks: {},
+  },
   configuration: [],
   disabled: false,
-  install: false,
-  installed: false
 })
 
+const componentList = [
+  'CheckBox',
+  'CodeEditor',
+  'Input',
+  'InputList',
+  'KeyValueEditor',
+  'Radio',
+  'Select',
+  'MultipleSelect',
+  'Switch',
+  'ColorPicker',
+] as const
+
+type ComponentType = (typeof componentList)[number]
+
 const { t } = useI18n()
-const { message } = useMessage()
 const [showMore, toggleShowMore] = useBool(false)
 const pluginsStore = usePluginsStore()
 
 const handleCancel = inject('cancel') as any
+const handleSubmit = inject('submit') as any
 
-const handleSubmit = async () => {
+const handleRestore = () => {
+  if (official.value) {
+    plugin.value = deepClone(official.value)
+    message.success('common.success')
+  }
+}
+
+const handleSave = async () => {
   loading.value = true
   try {
-    if (props.isUpdate) {
-      // Refresh the key to re-render the view
-      plugin.value.key = sampleID()
+    if (props.id) {
       await pluginsStore.editPlugin(props.id, plugin.value)
-      if (plugin.value.triggers.sort().join('') !== oldPluginTriggers.value) {
-        pluginsStore.updatePluginTrigger(plugin.value)
-      }
     } else {
       await pluginsStore.addPlugin(plugin.value)
-      // Try to autoload the plugin
-      await ignoredError(pluginsStore.reloadPlugin, plugin.value)
-      pluginsStore.updatePluginTrigger(plugin.value)
     }
-    handleCancel()
+    await handleSubmit()
   } catch (error: any) {
     console.error(error)
     message.error(error)
@@ -75,7 +97,7 @@ const handleAddParam = async () => {
     key: '',
     component: '',
     value: [],
-    options: []
+    options: [],
   })
 }
 
@@ -83,37 +105,45 @@ const handleDelParam = (index: number) => {
   plugin.value.configuration.splice(index, 1)
 }
 
-const hasOption = (component: string) => {
+const hasOption = (component: ComponentType) => {
   return (
-    component !== 'InputList' && ['CheckBox', 'InputList', 'Radio', 'Select'].includes(component)
+    component !== 'InputList' &&
+    ['CheckBox', 'InputList', 'Radio', 'Select', 'MultipleSelect'].includes(component)
   )
 }
 
-const onComponentChange = (component: string, index: number) => {
+const onComponentChange = (component: ComponentType, index: number) => {
   switch (component) {
     case 'CheckBox':
-    case 'InputList': {
-      plugin.value.configuration[index].value = []
-      plugin.value.configuration[index].options = []
+    case 'InputList':
+    case 'MultipleSelect': {
+      plugin.value.configuration[index]!.value = []
+      plugin.value.configuration[index]!.options = []
       break
     }
+    // @ts-expect-error(CodeViewer)
     case 'CodeViewer':
+    case 'CodeEditor':
     case 'Input':
     case 'Radio':
     case 'Select': {
-      plugin.value.configuration[index].value = ''
+      plugin.value.configuration[index]!.value = ''
+      break
+    }
+    case 'ColorPicker': {
+      plugin.value.configuration[index]!.value = '#000000'
       break
     }
     case 'KeyValueEditor': {
-      plugin.value.configuration[index].value = {}
+      plugin.value.configuration[index]!.value = {}
       break
     }
     case 'Switch': {
-      plugin.value.configuration[index].value = false
+      plugin.value.configuration[index]!.value = false
       break
     }
   }
-  plugin.value.configuration[index].component = component as any
+  plugin.value.configuration[index]!.component = component
 }
 
 const getOptions = (val: string[]) => {
@@ -123,176 +153,222 @@ const getOptions = (val: string[]) => {
   })
 }
 
-if (props.isUpdate) {
+if (props.id) {
   const p = pluginsStore.getPluginById(props.id)
-  if (p) {
-    plugin.value = deepClone(p)
-    oldPluginTriggers.value = p.triggers.sort().join('')
-  }
+  p && (plugin.value = deepClone(p))
 }
+
+const modalSlots = {
+  action: () =>
+    official.value
+      ? h(Button, { type: 'link', class: 'mr-auto', onClick: handleRestore }, () =>
+          t('plugin.restore'),
+        )
+      : undefined,
+  cancel: () =>
+    h(
+      Button,
+      {
+        disabled: loading.value,
+        onClick: handleCancel,
+      },
+      () => t('common.cancel'),
+    ),
+  submit: () =>
+    h(
+      Button,
+      {
+        type: 'primary',
+        loading: loading.value,
+        disabled:
+          !plugin.value.name ||
+          !plugin.value.version ||
+          !plugin.value.path ||
+          (plugin.value.type === 'Http' && !plugin.value.url),
+        onClick: handleSave,
+      },
+      () => t('common.save'),
+    ),
+}
+
+defineExpose({ modalSlots })
 </script>
 
 <template>
-  <div class="form">
+  <div class="w-full h-full">
     <div class="form-item">
-      <div class="name">
-        {{ t('plugin.type') }}
-      </div>
+      {{ t('plugin.type') }}
       <Radio
         v-model="plugin.type"
         :options="[
           { label: 'common.http', value: 'Http' },
-          { label: 'common.file', value: 'File' }
+          { label: 'common.file', value: 'File' },
         ]"
       />
     </div>
     <div class="form-item">
-      <div class="name">{{ t('plugin.install') }}</div>
-      <Switch v-model="plugin.install" />
+      <div class="mr-8">{{ t('plugin.trigger') }}</div>
+      <MultipleSelect v-model="plugin.triggers" :options="PluginsTriggerOptions" clearable />
     </div>
     <div class="form-item">
-      <div style="padding-right: 8px">
-        <div class="name">{{ t('plugin.trigger') }}</div>
+      {{ t('plugin.name') }} *
+      <div class="min-w-[75%]">
+        <Input v-model="plugin.name" autofocus class="w-full" />
       </div>
-      <CheckBox v-model="plugin.triggers" :options="PluginsTriggerOptions" />
     </div>
     <div class="form-item">
-      <div class="name">{{ t('plugin.name') }} *</div>
-      <Input v-model="plugin.name" auto-size autofocus class="input" />
+      {{ t('plugin.version') }} *
+      <div class="min-w-[75%]">
+        <Input v-model="plugin.version" class="w-full" />
+      </div>
     </div>
     <div v-show="plugin.type === 'Http'" class="form-item">
-      <div class="name">{{ t('plugin.url') }} *</div>
-      <Input
-        v-model="plugin.url"
-        :placeholder="plugin.type === 'Http' ? 'http(s)://' : 'data/local/plugin-{filename}.js'"
-        auto-size
-        class="input"
-      />
+      {{ t('plugin.url') }} *
+      <div class="min-w-[75%]">
+        <Input
+          v-model="plugin.url"
+          :placeholder="plugin.type === 'Http' ? 'http(s)://' : 'data/local/plugin-{filename}.js'"
+          allow-paste
+          class="w-full"
+        />
+      </div>
     </div>
     <div class="form-item">
-      <div class="name">{{ t('plugin.path') }} *</div>
-      <Input
-        v-model="plugin.path"
-        placeholder="data/plugins/plugin-{filename}.js"
-        auto-size
-        class="input"
-      />
+      {{ t('plugin.path') }} *
+      <div class="min-w-[75%]">
+        <Input
+          v-model="plugin.path"
+          placeholder="data/plugins/plugin-{filename}.js"
+          class="w-full"
+        />
+      </div>
     </div>
     <div class="form-item">
-      <div class="name">{{ t('plugin.description') }}</div>
-      <Input v-model="plugin.description" auto-size class="input" />
+      {{ t('plugin.description') }}
+      <div class="min-w-[75%]">
+        <Input v-model="plugin.description" class="w-full" />
+      </div>
     </div>
     <Divider>
-      <Button @click="toggleShowMore" type="text" size="small">
+      <Button type="text" size="small" @click="toggleShowMore">
         {{ t('common.more') }}
       </Button>
     </Divider>
-    <div v-show="showMore">
-      <div class="form-item" :class="{ 'flex-start': Object.keys(plugin.menus).length !== 0 }">
-        <div class="name">{{ t('plugin.menus') }}</div>
+    <div v-show="showMore" class="pb-8">
+      <div class="form-item">
+        {{ t('plugin.hasUI') }}
+        <Switch v-model="plugin.hasUI" />
+      </div>
+      <div class="form-item" :class="{ 'items-start': Object.keys(plugin.menus).length !== 0 }">
+        {{ t('plugin.menus') }}
         <KeyValueEditor
           v-model="plugin.menus"
           :placeholder="[t('plugin.menuKey'), t('plugin.menuValue')]"
         />
       </div>
+      <div
+        :class="{ 'items-start': Object.keys(plugin.context.profiles).length !== 0 }"
+        class="form-item"
+      >
+        {{ t('plugin.context') }} - {{ t('router.profiles') }}
+        <KeyValueEditor
+          v-model="plugin.context.profiles"
+          :placeholder="[t('plugin.menuKey'), t('plugin.menuValue')]"
+        />
+      </div>
+      <div
+        :class="{ 'items-start': Object.keys(plugin.context.subscriptions).length !== 0 }"
+        class="form-item"
+      >
+        {{ t('plugin.context') }} - {{ t('router.subscriptions') }}
+        <KeyValueEditor
+          v-model="plugin.context.subscriptions"
+          :placeholder="[t('plugin.menuKey'), t('plugin.menuValue')]"
+        />
+      </div>
       <Divider>{{ t('plugin.configuration') }}</Divider>
-      <div v-draggable="[plugin.configuration, { ...DraggableOptions, handle: '.drag' }]">
+      <div
+        v-draggable="[plugin.configuration, { ...DraggableOptions, handle: '.drag' }]"
+        class="px-8 flex flex-col gap-8"
+      >
         <template v-for="(conf, index) in plugin.configuration" :key="conf.id">
-          <Card v-if="conf.component" :title="conf.component" class="mb-8">
+          <Card v-if="conf.component" :title="conf.component">
             <template #title-prefix>
-              <Icon icon="drag" class="drag" style="cursor: move" />
-              <div class="ml-8">{{ index + 1 }}、</div>
+              <Icon icon="drag" class="drag cursor-move" />
+              <div class="ml-8">{{ index + 1 }}.</div>
             </template>
             <template #extra>
-              <Button @click="handleDelParam(index)" size="small" type="text">
+              <Button size="small" type="text" @click="handleDelParam(index)">
                 {{ t('common.delete') }}
               </Button>
             </template>
             <div class="form-item">
-              <div class="name">{{ t('plugin.confName') }}</div>
-              <Input v-model="conf.title" placeholder="title" />
+              {{ t('plugin.confName') }}
+              <div class="min-w-[75%]">
+                <Input v-model="conf.title" placeholder="title" class="w-full" />
+              </div>
             </div>
             <div class="form-item">
-              <div class="name">{{ t('plugin.confDescription') }}</div>
-              <Input v-model="conf.description" placeholder="description" />
+              {{ t('plugin.confDescription') }}
+              <div class="min-w-[75%]">
+                <Input v-model="conf.description" placeholder="description" class="w-full" />
+              </div>
             </div>
             <div class="form-item">
-              <div class="name">{{ t('plugin.confKey') }}</div>
-              <Input v-model="conf.key" placeholder="key" />
+              {{ t('plugin.confKey') }}
+              <div class="min-w-[75%]">
+                <Input v-model="conf.key" placeholder="key" class="w-full" />
+              </div>
             </div>
-            <div class="form-item" :class="{ 'flex-start': conf.value.length !== 0 }">
-              <div class="name">{{ t('plugin.confDefault') }}</div>
-              <Component
-                :is="conf.component"
-                v-model="conf.value"
-                :options="getOptions(conf.options)"
-                editable
-              />
+            <div class="form-item" :class="{ 'items-start': conf.value.length !== 0 }">
+              {{ t('plugin.confDefault') }}
+              <div
+                :class="
+                  conf.component === 'CodeEditor' || conf.component === ('CodeViewer' as any)
+                    ? 'min-w-[75%]'
+                    : ''
+                "
+              >
+                <Component
+                  :is="conf.component"
+                  v-model="conf.value"
+                  :options="getOptions(conf.options)"
+                  editable
+                  class="w-full"
+                />
+              </div>
             </div>
             <div
               v-if="hasOption(conf.component)"
-              :class="{ 'flex-start': conf.options.length !== 0 }"
+              :class="{ 'items-start': conf.options.length !== 0 }"
               class="form-item"
             >
-              <div class="name">{{ t('plugin.options') }}</div>
+              {{ t('plugin.options') }}
               <InputList v-model="conf.options" />
             </div>
           </Card>
-          <div v-else class="form-item">
-            <Select
-              @change="(val: string) => onComponentChange(val, index)"
-              :options="[
-                { label: 'CheckBox', value: 'CheckBox' },
-                { label: 'CodeViewer', value: 'CodeViewer' },
-                { label: 'Input', value: 'Input' },
-                { label: 'InputList', value: 'InputList' },
-                { label: 'KeyValueEditor', value: 'KeyValueEditor' },
-                { label: 'Radio', value: 'Radio' },
-                { label: 'Select', value: 'Select' },
-                { label: 'Switch', value: 'Switch' }
-              ]"
-              placeholder="plugin.selectComponent"
-            />
-            <Button @click="handleDelParam(index)" size="small" type="text">
-              {{ t('common.delete') }}
-            </Button>
-          </div>
+          <Card v-else :title="t('plugin.selectComponent')">
+            <template #extra>
+              <Button size="small" type="text" @click="handleDelParam(index)">
+                {{ t('common.delete') }}
+              </Button>
+            </template>
+            <div class="flex grid grid-cols-4 gap-8">
+              <Button
+                v-for="item in componentList"
+                :key="item"
+                @click="onComponentChange(item, index)"
+              >
+                {{ item }}
+              </Button>
+            </div>
+          </Card>
         </template>
       </div>
-      <Button @click="handleAddParam" type="primary" size="small" icon="add" class="w-full" />
+
+      <div :class="plugin.configuration.length !== 0 ? 'mt-8' : ''" class="mx-8">
+        <Button type="primary" icon="add" class="w-full" @click="handleAddParam" />
+      </div>
     </div>
   </div>
-  <div class="form-action">
-    <Button @click="handleCancel">{{ t('common.cancel') }}</Button>
-    <Button
-      @click="handleSubmit"
-      :loading="loading"
-      :disabled="!plugin.name || !plugin.path || (plugin.type === 'Http' && !plugin.url)"
-      type="primary"
-    >
-      {{ t('common.save') }}
-    </Button>
-  </div>
 </template>
-
-<style lang="less" scoped>
-.form {
-  padding: 0 8px;
-  overflow-y: auto;
-  max-height: 70vh;
-  .name {
-    font-size: 14px;
-    padding: 8px 0;
-    white-space: nowrap;
-  }
-}
-.form-item {
-  .input {
-    width: 78%;
-  }
-}
-
-.flex-start {
-  align-items: flex-start;
-}
-</style>

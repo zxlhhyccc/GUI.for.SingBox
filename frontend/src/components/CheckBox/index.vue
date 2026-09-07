@@ -1,19 +1,38 @@
 <script setup lang="ts">
+import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 interface Props {
+  modelValue?: string[]
   options?: { label: string; value: string }[]
   size?: 'default' | 'small'
 }
 
-const model = defineModel<string[]>({ default: [] })
-
-withDefaults(defineProps<Props>(), {
+const props = withDefaults(defineProps<Props>(), {
+  modelValue: () => [],
   options: () => [],
-  size: 'default'
+  size: 'default',
 })
 
+const emit = defineEmits(['change', 'update:modelValue'])
+
+const model = ref<string[]>([...props.modelValue])
 const { t } = useI18n()
+
+let internalUpdate = false
+
+watch(
+  () => props.modelValue,
+  (newVal) => {
+    if (!internalUpdate) {
+      model.value = [...newVal]
+    }
+    internalUpdate = false
+  },
+  {
+    deep: true,
+  },
+)
 
 const isActive = (val: string) => model.value.includes(val)
 
@@ -24,17 +43,20 @@ const handleSelect = (val: string) => {
   } else {
     model.value.push(val)
   }
+  internalUpdate = true
+  emit('update:modelValue', [...model.value])
+  emit('change', [...model.value])
 }
 </script>
 
 <template>
-  <div :class="[size]" class="checkbox">
+  <div :class="[size]" class="gui-checkbox inline-flex rounded-8 overflow-hidden text-12">
     <div
-      v-for="o in options"
+      v-for="o in props.options"
       :key="o.value"
-      @click="handleSelect(o.value)"
       :class="{ active: isActive(o.value) }"
-      class="checkbox-button"
+      class="gui-checkbox-button cursor-pointer px-12 py-6 transition duration-200 line-clamp-1 break-all"
+      @click="handleSelect(o.value)"
     >
       {{ t(o.label) }}
     </div>
@@ -42,20 +64,12 @@ const handleSelect = (val: string) => {
 </template>
 
 <style lang="less" scoped>
-.checkbox {
-  display: inline-flex;
+.gui-checkbox {
   border: 1px solid var(--primary-color);
-  border-radius: 8px;
-  overflow: hidden;
-  font-size: 12px;
   &-button {
-    cursor: pointer;
     color: var(--radio-normal-color);
     background-color: var(--radio-normal-bg);
-    padding: 6px 12px;
     border-left: 1px solid var(--primary-color);
-    transition: all 0.2s;
-    white-space: nowrap;
     &:nth-child(1) {
       border-left: none;
     }
@@ -76,7 +90,7 @@ const handleSelect = (val: string) => {
 }
 
 .small {
-  .checkbox-button {
+  .gui-checkbox-button {
     font-size: 10px;
     padding: 4px 8px;
   }

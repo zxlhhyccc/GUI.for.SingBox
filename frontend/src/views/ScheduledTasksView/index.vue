@@ -1,61 +1,70 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { Cron } from 'croner'
 import { useI18n, I18nT } from 'vue-i18n'
 
-import { View } from '@/constant'
-import { useMessage, useBool } from '@/hooks'
-import { DraggableOptions } from '@/constant'
-import { debounce, formatRelativeTime, formatDate } from '@/utils'
-import {
-  type ScheduledTaskType,
-  useAppSettingsStore,
-  useScheduledTasksStore,
-  type Menu
-} from '@/stores'
+import { DraggableOptions, ViewOptions } from '@/constant/app'
+import { View } from '@/enums/app'
+import { useAppSettingsStore, useScheduledTasksStore } from '@/stores'
+import { debounce, formatRelativeTime, formatDate, message, alert, modal } from '@/utils'
 
 import ScheduledTaskForm from './components/ScheduledTaskForm.vue'
 import ScheduledTasksLogs from './components/ScheduledTasksLogs.vue'
 
-const showTaskForm = ref(false)
-const taskFormTaskID = ref()
-const taskFormIsUpdate = ref(false)
-const taskFormTitle = computed(() => (taskFormIsUpdate.value ? 'common.edit' : 'common.add'))
-
-const menuList: Menu[] = [
+const menuList: App.Menu[] = [
   {
     label: 'scheduledtasks.run',
     handler: (id: string) => {
       scheduledTasksStore.runScheduledTask(id)
-    }
+    },
+  },
+  {
+    label: 'scheduledtasks.next',
+    handler: (id: string) => {
+      const task = scheduledTasksStore.getScheduledTaskById(id)
+      if (task) {
+        const list = new Cron(task.cron).nextRuns(99).map((v, i) => {
+          const index = (i + 1).toString().padStart(2, '0')
+          return index + ' - '.repeat(14) + formatDate(v.getTime(), 'YYYY/MM/DD HH:mm:ss')
+        })
+        alert('Next Run Time', list.join('\n'))
+      }
+    },
   },
   {
     label: 'scheduledtasks.log',
     handler: (id: string) => {
-      taskFormTaskID.value = id
-      showLogs.value = true
-    }
-  }
+      handleShowTaskLogs(id)
+    },
+  },
 ]
 
-const [showLogs, toggleLogs] = useBool(false)
-
 const { t } = useI18n()
-const { message } = useMessage()
 const scheduledTasksStore = useScheduledTasksStore()
 const appSettingsStore = useAppSettingsStore()
 
-const handleAddTask = async () => {
-  taskFormIsUpdate.value = false
-  showTaskForm.value = true
+const handleShowTaskLogs = (id?: string) => {
+  const m = modal({
+    title: 'scheduledtasks.logs',
+    cancelText: 'common.close',
+    maskClosable: true,
+    submit: false,
+    width: '90',
+    height: '90',
+  })
+  m.setContent(ScheduledTasksLogs, { id }).open()
 }
 
-const handleEditTask = (s: ScheduledTaskType) => {
-  taskFormIsUpdate.value = true
-  taskFormTaskID.value = s.id
-  showTaskForm.value = true
+const handleShowTaskForm = (id?: string) => {
+  const m = modal({
+    title: id ? 'common.edit' : 'common.add',
+    maxHeight: '90',
+    minWidth: '70',
+    maxWidth: '90',
+  })
+  m.setContent(ScheduledTaskForm, { id }).open()
 }
 
-const handleDeleteTask = async (s: ScheduledTaskType) => {
+const handleDeleteTask = async (s: App.ScheduledTask) => {
   try {
     await scheduledTasksStore.deleteScheduledTask(s.id)
   } catch (error: any) {
@@ -64,14 +73,9 @@ const handleDeleteTask = async (s: ScheduledTaskType) => {
   }
 }
 
-const handleDisableTask = async (s: ScheduledTaskType) => {
+const handleDisableTask = async (s: App.ScheduledTask) => {
   s.disabled = !s.disabled
   scheduledTasksStore.editScheduledTask(s.id, s)
-}
-
-const handleViewLogs = () => {
-  taskFormTaskID.value = ''
-  toggleLogs()
 }
 
 const onSortUpdate = debounce(scheduledTasksStore.saveScheduledTasks, 1000)
@@ -81,9 +85,14 @@ const onSortUpdate = debounce(scheduledTasksStore.saveScheduledTasks, 1000)
   <div v-if="scheduledTasksStore.scheduledtasks.length === 0" class="grid-list-empty">
     <Empty>
       <template #description>
-        <I18nT keypath="scheduledtasks.empty" tag="p" scope="global">
+        <I18nT
+          keypath="scheduledtasks.empty"
+          tag="div"
+          scope="global"
+          class="flex items-center mt-12"
+        >
           <template #action>
-            <Button @click="handleAddTask" type="link">{{ t('common.add') }}</Button>
+            <Button type="link" @click="handleShowTaskForm()">{{ t('common.add') }}</Button>
           </template>
         </I18nT>
       </template>
@@ -93,15 +102,13 @@ const onSortUpdate = debounce(scheduledTasksStore.saveScheduledTasks, 1000)
   <div v-else class="grid-list-header">
     <Radio
       v-model="appSettingsStore.app.scheduledtasksView"
-      :options="[
-        { label: 'common.grid', value: View.Grid },
-        { label: 'common.list', value: View.List }
-      ]"
+      :options="ViewOptions"
+      class="mr-auto"
     />
-    <Button @click="handleViewLogs" type="text" class="ml-auto">
+    <Button type="text" @click="handleShowTaskLogs()">
       {{ t('scheduledtasks.logs') }}
     </Button>
-    <Button @click="handleAddTask" type="primary">
+    <Button type="primary" icon="add" class="ml-16" @click="handleShowTaskForm()">
       {{ t('common.add') }}
     </Button>
   </div>
@@ -109,43 +116,45 @@ const onSortUpdate = debounce(scheduledTasksStore.saveScheduledTasks, 1000)
   <div
     v-draggable="[
       scheduledTasksStore.scheduledtasks,
-      { ...DraggableOptions, onUpdate: onSortUpdate }
+      { ...DraggableOptions, onUpdate: onSortUpdate },
     ]"
     :class="'grid-list-' + appSettingsStore.app.scheduledtasksView"
   >
     <Card
       v-for="s in scheduledTasksStore.scheduledtasks"
       :key="s.id"
+      v-menu="menuList.map((v) => ({ ...v, handler: () => v.handler?.(s.id) }))"
       :title="s.name"
       :disabled="s.disabled"
-      v-menu="menuList.map((v) => ({ ...v, handler: () => v.handler?.(s.id) }))"
-      class="item"
+      class="grid-list-item"
     >
       <template v-if="appSettingsStore.app.scheduledtasksView === View.Grid" #extra>
-        <Dropdown :trigger="['hover', 'click']">
+        <Dropdown>
           <Button type="link" size="small" icon="more" />
           <template #overlay>
-            <Button type="link" size="small" @click="handleDisableTask(s)">
-              {{ s.disabled ? t('common.enable') : t('common.disable') }}
-            </Button>
-            <Button type="link" size="small" @click="handleEditTask(s)">
-              {{ t('common.edit') }}
-            </Button>
-            <Button type="link" size="small" @click="handleDeleteTask(s)">
-              {{ t('common.delete') }}
-            </Button>
+            <div class="flex flex-col gap-4 min-w-64 p-4">
+              <Button type="text" @click="handleDisableTask(s)">
+                {{ s.disabled ? t('common.enable') : t('common.disable') }}
+              </Button>
+              <Button type="text" @click="handleShowTaskForm(s.id)">
+                {{ t('common.edit') }}
+              </Button>
+              <Button type="text" @click="handleDeleteTask(s)">
+                {{ t('common.delete') }}
+              </Button>
+            </div>
           </template>
         </Dropdown>
       </template>
 
       <template v-else #extra>
-        <Button type="link" size="small" @click="handleDisableTask(s)">
+        <Button type="text" size="small" @click="handleDisableTask(s)">
           {{ s.disabled ? t('common.enable') : t('common.disable') }}
         </Button>
-        <Button type="link" size="small" @click="handleEditTask(s)">
+        <Button type="text" size="small" @click="handleShowTaskForm(s.id)">
           {{ t('common.edit') }}
         </Button>
-        <Button type="link" size="small" @click="handleDeleteTask(s)">
+        <Button type="text" size="small" @click="handleDeleteTask(s)">
           {{ t('common.delete') }}
         </Button>
       </template>
@@ -171,29 +180,4 @@ const onSortUpdate = debounce(scheduledTasksStore.saveScheduledTasks, 1000)
       </div>
     </Card>
   </div>
-
-  <Modal
-    v-model:open="showTaskForm"
-    :title="taskFormTitle"
-    max-height="90"
-    min-width="70"
-    max-width="90"
-    :footer="false"
-  >
-    <ScheduledTaskForm :is-update="taskFormIsUpdate" :id="taskFormTaskID" />
-  </Modal>
-
-  <Modal
-    v-model:open="showLogs"
-    :submit="false"
-    mask-closable
-    cancel-text="common.close"
-    title="scheduledtasks.logs"
-    width="90"
-    height="90"
-  >
-    <ScheduledTasksLogs :id="taskFormTaskID" />
-  </Modal>
 </template>
-
-<style lang="less" scoped></style>

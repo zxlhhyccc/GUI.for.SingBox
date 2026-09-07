@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, inject, watch, computed } from 'vue'
+import { ref, inject, watch, computed, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { useMessage } from '@/hooks'
-import { deepClone, sampleID } from '@/utils'
-import { type RuleSetType, useRulesetsStore } from '@/stores'
-import { RulesetFormat, RulesetFormatOptions } from '@/constant'
+import { RulesetFormatOptions } from '@/constant/kernel'
+import { RulesetFormat } from '@/enums/kernel'
+import { useRulesetsStore } from '@/stores'
+import { deepClone, message, sampleID } from '@/utils'
+
+import Button from '@/components/Button/index.vue'
 
 interface Props {
   id?: string
@@ -14,25 +16,24 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   id: '',
-  isUpdate: false
+  isUpdate: false,
 })
 
 const loading = ref(false)
 
-const ruleset = ref<RuleSetType>({
+const ruleset = ref<App.RuleSet>({
   id: sampleID(),
-  tag: '',
+  name: '',
   updateTime: 0,
   format: RulesetFormat.Binary,
   type: 'Http',
   url: '',
   count: 0,
   path: `data/rulesets/${sampleID()}.srs`,
-  disabled: false
+  disabled: false,
 })
 
 const { t } = useI18n()
-const { message } = useMessage()
 const rulesetsStore = useRulesetsStore()
 
 const handleCancel = inject('cancel') as any
@@ -67,9 +68,9 @@ const handleSubmit = async () => {
 
 const disabled = computed(
   () =>
-    !ruleset.value.tag ||
+    !ruleset.value.name ||
     (ruleset.value.type === 'Manual' && !ruleset.value.path) ||
-    (['Http', 'File'].includes(ruleset.value.type) && (!ruleset.value.url || !ruleset.value.path))
+    (['Http', 'File'].includes(ruleset.value.type) && (!ruleset.value.url || !ruleset.value.path)),
 )
 
 watch(
@@ -78,7 +79,7 @@ watch(
     if (v === 'Manual') {
       ruleset.value.format = RulesetFormat.Source
     }
-  }
+  },
 )
 
 watch(
@@ -92,9 +93,9 @@ watch(
     }
     ruleset.value.path = ruleset.value.path.replace(
       isJson ? '.srs' : '.json',
-      isJson ? '.json' : '.srs'
+      isJson ? '.json' : '.srs',
     )
-  }
+  },
 )
 
 if (props.isUpdate) {
@@ -103,77 +104,81 @@ if (props.isUpdate) {
     ruleset.value = deepClone(r)
   }
 }
+
+const modalSlots = {
+  cancel: () =>
+    h(
+      Button,
+      {
+        disabled: loading.value,
+        onClick: handleCancel,
+      },
+      () => t('common.cancel'),
+    ),
+  submit: () =>
+    h(
+      Button,
+      {
+        type: 'primary',
+        disabled: disabled.value,
+        loading: loading.value,
+        onClick: handleSubmit,
+      },
+      () => t('common.save'),
+    ),
+}
+
+defineExpose({ modalSlots })
 </script>
 
 <template>
-  <div class="form">
+  <div>
     <div class="form-item">
-      <div class="name">
-        {{ t('ruleset.rulesetType') }}
-      </div>
+      {{ t('ruleset.rulesetType') }}
       <Radio
         v-model="ruleset.type"
         :options="[
           { label: 'common.http', value: 'Http' },
           { label: 'common.file', value: 'File' },
-          { label: 'ruleset.manual', value: 'Manual' }
+          { label: 'ruleset.manual', value: 'Manual' },
         ]"
       />
     </div>
     <div v-show="ruleset.type !== 'Manual'" class="form-item">
-      <div class="name">
-        {{ t('ruleset.format.name') }}
-      </div>
+      {{ t('ruleset.format.name') }}
       <Radio v-model="ruleset.format" :options="RulesetFormatOptions" />
     </div>
     <div class="form-item">
-      <div class="name">{{ t('ruleset.name') }} *</div>
-      <Input v-model="ruleset.tag" auto-size autofocus class="input" />
+      {{ t('ruleset.name') }} *
+      <div class="min-w-[75%]">
+        <Input v-model="ruleset.name" autofocus class="w-full" />
+      </div>
     </div>
     <div v-show="ruleset.type !== 'Manual'" class="form-item">
-      <div class="name">{{ t('ruleset.url') }} *</div>
-      <Input
-        v-model="ruleset.url"
-        :placeholder="
-          ruleset.type === 'Http'
-            ? 'http(s)://'
-            : 'data/local/{filename}.' + (ruleset.format === RulesetFormat.Binary ? 'srs' : 'json')
-        "
-        auto-size
-        class="input"
-      />
+      {{ t('ruleset.url') }} *
+      <div class="min-w-[75%]">
+        <Input
+          v-model="ruleset.url"
+          allow-paste
+          :placeholder="
+            ruleset.type === 'Http'
+              ? 'http(s)://'
+              : 'data/local/{filename}.' +
+                (ruleset.format === RulesetFormat.Binary ? 'srs' : 'json')
+          "
+          class="w-full"
+        />
+      </div>
     </div>
     <div class="form-item">
-      <div class="name">{{ t('ruleset.path') }} *</div>
-      <Input
-        v-model="ruleset.path"
-        :placeholder="`data/rulesets/{filename}.${ruleset.format === RulesetFormat.Binary ? 'srs' : 'json'}`"
-        auto-size
-        class="input"
-      />
+      {{ t('ruleset.path') }} *
+      <div class="min-w-[75%]">
+        <Input
+          v-model="ruleset.path"
+          :placeholder="`data/rulesets/{filename}.${ruleset.format === RulesetFormat.Binary ? 'srs' : 'json'}`"
+          class="w-full"
+        />
+      </div>
     </div>
   </div>
-
-  <div class="form-action">
-    <Button @click="handleCancel">{{ t('common.cancel') }}</Button>
-    <Button @click="handleSubmit" :loading="loading" :disabled="disabled" type="primary">
-      {{ t('common.save') }}
-    </Button>
-  </div>
 </template>
-
-<style lang="less" scoped>
-.form {
-  padding: 0 8px;
-  overflow-y: auto;
-  max-height: 70vh;
-  .name {
-    font-size: 14px;
-    padding: 8px 0;
-    white-space: nowrap;
-  }
-  .input {
-    width: 78%;
-  }
-}
-</style>

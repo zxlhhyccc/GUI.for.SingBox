@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net"
 	"sync"
@@ -15,33 +16,30 @@ type MMDBInstance = struct {
 }
 
 var (
-	mutex   sync.Mutex
+	mu      sync.RWMutex
 	mmdbMap = make(map[string]*MMDBInstance)
 )
 
 func (a *App) OpenMMDB(path string, id string) FlagResult {
 	log.Printf("OpenMMDB: %s -> %s", id, path)
 
-	mutex.Lock()
-	defer mutex.Unlock()
+	dbPath := resolvePath(path)
 
-	if db, isOpened := mmdbMap[path]; isOpened {
-		if _, ref := db.Refs[id]; !ref {
-			db.Refs[id] = true
-		}
+	mu.Lock()
+	defer mu.Unlock()
+
+	if db, exists := mmdbMap[dbPath]; exists {
+		db.Refs[id] = true
 		return FlagResult{true, "Success"}
 	}
 
-	reader, err := geoip2.Open(GetPath(path))
+	reader, err := geoip2.Open(dbPath)
 	if err != nil {
-		return FlagResult{false, err.Error()}
+		return FlagResult{false, "Failed to open mmdb: " + err.Error()}
 	}
 
-	refs := make(map[string]bool)
-	refs[id] = true
-
-	mmdbMap[path] = &MMDBInstance{
-		Refs:   refs,
+	mmdbMap[dbPath] = &MMDBInstance{
+		Refs:   map[string]bool{id: true},
 		Reader: reader,
 	}
 
@@ -51,69 +49,81 @@ func (a *App) OpenMMDB(path string, id string) FlagResult {
 func (a *App) CloseMMDB(path string, id string) FlagResult {
 	log.Printf("CloseMMDB: %s -> %s", id, path)
 
-	mutex.Lock()
-	defer mutex.Unlock()
+	dbPath := resolvePath(path)
 
-	db, isOpened := mmdbMap[path]
+	mu.Lock()
+	defer mu.Unlock()
 
-	if !isOpened {
-		return FlagResult{false, "Database file is not open: " + path}
+	db, exists := mmdbMap[dbPath]
+
+	if !exists {
+		return FlagResult{false, "Database not open: " + path}
 	}
 
-	if _, ref := db.Refs[id]; !ref {
-		return FlagResult{false, "The current database is not referenced by: " + id}
+	if !db.Refs[id] {
+		return FlagResult{false, "Reference not found for: " + id}
 	}
 
 	delete(db.Refs, id)
 
 	if len(db.Refs) == 0 {
-		err := db.Reader.Close()
-		if err != nil {
-			return FlagResult{false, err.Error()}
+		if err := db.Reader.Close(); err != nil {
+			return FlagResult{false, "Failed to close reader: " + err.Error()}
 		}
-		delete(mmdbMap, path)
+		delete(mmdbMap, dbPath)
 	}
 
 	return FlagResult{true, "Success"}
 }
 
-func (a *App) QueryMMDB(path string, ip string, types string) FlagResult {
+func (a *App) QueryMMDB(path string, ip string, dataType string) FlagResult {
 	log.Printf("QueryMMDB: %s -> %s", path, ip)
 
-	_ip := net.ParseIP(ip)
-
-	db, isOpened := mmdbMap[path]
-
-	if !isOpened {
-		return FlagResult{false, "Database file is not open: " + path}
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return FlagResult{false, "Invalid IP address"}
 	}
 
-	var record interface{}
-	var err error
-	switch types {
+	dbPath := resolvePath(path)
+
+	mu.RLock()
+	db, exists := mmdbMap[dbPath]
+	if !exists {
+		mu.RUnlock()
+		return FlagResult{false, "Database not open: " + path}
+	}
+
+	record, err := queryByType(db.Reader, parsedIP, dataType)
+	mu.RUnlock()
+	if err != nil {
+		return FlagResult{false, err.Error()}
+	}
+
+	bytes, err := json.Marshal(record)
+	if err != nil {
+		return FlagResult{false, err.Error()}
+	}
+
+	return FlagResult{true, string(bytes)}
+}
+
+func queryByType(reader *geoip2.Reader, ip net.IP, dataType string) (any, error) {
+	switch dataType {
 	case "ASN":
-		record, err = db.Reader.ASN(_ip)
+		return reader.ASN(ip)
 	case "AnonymousIP":
-		record, err = db.Reader.AnonymousIP(_ip)
+		return reader.AnonymousIP(ip)
 	case "City":
-		record, err = db.Reader.City(_ip)
+		return reader.City(ip)
 	case "ConnectionType":
-		record, err = db.Reader.ConnectionType(_ip)
+		return reader.ConnectionType(ip)
 	case "Country":
-		record, err = db.Reader.Country(_ip)
+		return reader.Country(ip)
 	case "Domain":
-		record, err = db.Reader.Domain(_ip)
+		return reader.Domain(ip)
 	case "Enterprise":
-		record, err = db.Reader.Enterprise(_ip)
+		return reader.Enterprise(ip)
+	default:
+		return nil, errors.New("Unsupported query type: " + dataType)
 	}
-	if err != nil {
-		return FlagResult{false, err.Error()}
-	}
-
-	str, err := json.Marshal(record)
-	if err != nil {
-		return FlagResult{false, err.Error()}
-	}
-
-	return FlagResult{true, string(str)}
 }

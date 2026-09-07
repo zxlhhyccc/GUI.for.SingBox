@@ -1,36 +1,29 @@
 <script setup lang="ts">
-import type { Component } from 'vue'
+import { computed } from 'vue'
 
-import icons from './icons'
-
-type IconFuncType = Record<string, { default: Component }>
-
-export type IconType = (typeof icons)[number]
-
-const Icons: IconFuncType = import.meta.glob('./*Icon.vue', { eager: true })
-
-const IconsMap: Record<string, Component> = {}
-
-for (const path in Icons) {
-  let name = path.slice(2, path.length - 8)
-  name = name.replace(name[0], name[0].toLowerCase())
-  IconsMap[name] = Icons[path].default
-}
+import { icons, type IconName } from './icons'
 
 interface Props {
-  icon: IconType
+  icon: IconName
   size?: number
+  color?: string
 }
 
-withDefaults(defineProps<Props>(), { size: 16 })
+const props = withDefaults(defineProps<Props>(), { size: 16, color: 'var(--color)' })
+
+const sizeWithUnit = computed(() => props.size + 'px')
 </script>
 
 <template>
-  <Component
-    :is="IconsMap[icon] || IconsMap['error']"
-    v-bind="{ ...$attrs, width: size + 'px', height: size + 'px' }"
-    fill="var(--color)"
-  />
+  <div class="inline-flex">
+    <span class="icon flex items-center justify-center" v-html="icons[icon] || icons.error" />
+  </div>
 </template>
 
-<style lang="less" scoped></style>
+<style>
+.icon svg {
+  width: v-bind(sizeWithUnit);
+  height: v-bind(sizeWithUnit);
+  fill: v-bind(color);
+}
+</style>

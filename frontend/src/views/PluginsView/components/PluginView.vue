@@ -1,12 +1,14 @@
 <script setup lang="ts">
+import { ref, inject, h } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ref, inject } from 'vue'
 
-import { useMessage } from '@/hooks'
-import { Readfile, Writefile } from '@/bridge'
-import { PluginTriggerEvent } from '@/constant'
-import { deepClone, ignoredError } from '@/utils'
-import { usePluginsStore, type PluginType } from '@/stores'
+import { ReadFile, WriteFile } from '@/bridge'
+import { PluginTriggerEvent } from '@/enums/app'
+import { usePluginsStore } from '@/stores'
+import { deepClone, ignoredError, message } from '@/utils'
+
+import Button from '@/components/Button/index.vue'
+import Dropdown from '@/components/Dropdown/index.vue'
 
 interface Props {
   id: string
@@ -15,12 +17,11 @@ interface Props {
 const props = defineProps<Props>()
 
 const loading = ref(false)
-const plugin = ref<PluginType>()
+const plugin = ref<App.Plugin>()
 const metadata = ref<Record<string, any>>()
 const code = ref('')
 
 const { t } = useI18n()
-const { message } = useMessage()
 const pluginsStore = usePluginsStore()
 
 const handleCancel = inject('cancel') as any
@@ -30,8 +31,8 @@ const handleSave = async () => {
   if (!plugin.value) return
   loading.value = true
   try {
-    await Writefile(plugin.value.path, code.value)
-    await pluginsStore.reloadPlugin(plugin.value, code.value)
+    await WriteFile(plugin.value.path, code.value)
+    await pluginsStore.reloadPlugin(plugin.value, code.value, false)
     handleSubmit()
   } catch (error: any) {
     message.error(error)
@@ -47,8 +48,8 @@ const handleTest = async (event: PluginTriggerEvent, arg1?: any, arg2?: any) => 
   testing.value = true
   try {
     const metadata = JSON.stringify({
-      ...pluginsStore.getPluginMetadata(plugin.value),
-      Mode: 'Dev'
+      ...pluginsStore.getPluginMetadata(props.id),
+      Mode: 'Dev',
     })
     if (event === PluginTriggerEvent.OnSubscribe) {
       arg1 = '[]'
@@ -60,8 +61,8 @@ const handleTest = async (event: PluginTriggerEvent, arg1?: any, arg2?: any) => 
       arg1 = metadata
       arg2 = metadata
     }
-    const fn = new AsyncFunction(
-      `const Plugin = ${metadata};\n${code.value}\nreturn await ${event}(${arg1}, ${arg2})`
+    const fn = new window.AsyncFunction(
+      `const Plugin = ${metadata};\n${code.value}\nreturn await ${event}(${arg1}, ${arg2})`,
     )
     await fn()
     message.success('common.success')
@@ -71,79 +72,106 @@ const handleTest = async (event: PluginTriggerEvent, arg1?: any, arg2?: any) => 
   testing.value = false
 }
 
-const initPluginCode = async (p: PluginType) => {
+const initPluginCode = async (p: App.Plugin) => {
   const _code = pluginsStore.getPluginCodefromCache(p.id)
   if (_code) {
     code.value = _code
     return
   }
-  const content = (await ignoredError(Readfile, p.path)) || ''
+  const content = (await ignoredError(ReadFile, p.path)) || ''
   code.value = content
 }
 
 const p = pluginsStore.getPluginById(props.id)
 if (p) {
   plugin.value = deepClone(p)
-  metadata.value = pluginsStore.getPluginMetadata(plugin.value)
+  metadata.value = pluginsStore.getPluginMetadata(props.id)
   initPluginCode(p)
 }
+
+const modalSlots = {
+  action: () => {
+    const events = [
+      [PluginTriggerEvent.OnEnabled, 'plugin.on::enabled'],
+      [PluginTriggerEvent.OnDisabled, 'plugin.on::disabled'],
+      [PluginTriggerEvent.OnDispose, 'plugin.on::dispose'],
+      [PluginTriggerEvent.OnManual, 'plugin.on::manual'],
+      [PluginTriggerEvent.OnInstall, 'plugin.on::install'],
+      [PluginTriggerEvent.OnUninstall, 'plugin.on::uninstall'],
+      [PluginTriggerEvent.OnStartup, 'plugin.on::startup'],
+      [PluginTriggerEvent.OnShutdown, 'plugin.on::shutdown'],
+      [PluginTriggerEvent.OnReady, 'plugin.on::ready'],
+      [PluginTriggerEvent.OnTask, 'plugin.on::task'],
+      [PluginTriggerEvent.OnConfigure, 'plugin.on::configure'],
+      [PluginTriggerEvent.OnSubscribe, 'plugin.on::subscribe'],
+      [PluginTriggerEvent.OnGenerate, 'plugin.on::generate'],
+      [PluginTriggerEvent.OnCoreStarted, 'plugin.on::core::started'],
+      [PluginTriggerEvent.OnCoreStopped, 'plugin.on::core::stopped'],
+      [PluginTriggerEvent.OnBeforeCoreStart, 'plugin.on::before::core::start'],
+      [PluginTriggerEvent.OnBeforeCoreStop, 'plugin.on::before::core::stop'],
+    ] as const
+
+    return h(
+      Dropdown,
+      {
+        placement: 'top',
+        class: 'mr-auto',
+      },
+      {
+        default: () =>
+          h(
+            Button,
+            {
+              loading: testing.value,
+              type: 'link',
+            },
+            () => t('plugins.testRun'),
+          ),
+        overlay: () =>
+          h(
+            'div',
+            {
+              class: 'p-4 flex flex-col gap-2 min-w-128',
+            },
+            events.map(([type, label]) =>
+              h(
+                Button,
+                {
+                  onClick: () => handleTest(type),
+                  type: 'text',
+                  size: 'small',
+                },
+                () => t(label),
+              ),
+            ),
+          ),
+      },
+    )
+  },
+  cancel: () =>
+    h(
+      Button,
+      {
+        disabled: loading.value,
+        onClick: handleCancel,
+      },
+      () => t('common.cancel'),
+    ),
+  submit: () =>
+    h(
+      Button,
+      {
+        type: 'primary',
+        loading: loading.value,
+        onClick: handleSave,
+      },
+      () => t('common.save'),
+    ),
+}
+
+defineExpose({ modalSlots })
 </script>
 
 <template>
-  <div class="plugin-view">
-    <CodeViewer v-model="code" :plugin="metadata" lang="javascript" editable />
-  </div>
-  <div class="form-action">
-    <Dropdown :trigger="['hover']" placement="top" class="mr-auto">
-      <Button :loading="testing" type="link">{{ t('plugins.testRun') }}</Button>
-      <template #overlay>
-        <Button @click="handleTest(PluginTriggerEvent.OnManual)" type="link" size="small">
-          {{ t('plugin.on::manual') }}
-        </Button>
-        <Button @click="handleTest(PluginTriggerEvent.OnInstall)" type="link" size="small">
-          {{ t('plugin.on::install') }}
-        </Button>
-        <Button @click="handleTest(PluginTriggerEvent.OnUninstall)" type="link" size="small">
-          {{ t('plugin.on::uninstall') }}
-        </Button>
-        <Button @click="handleTest(PluginTriggerEvent.OnStartup)" type="link" size="small">
-          {{ t('plugin.on::startup') }}
-        </Button>
-        <Button @click="handleTest(PluginTriggerEvent.OnShutdown)" type="link" size="small">
-          {{ t('plugin.on::shutdown') }}
-        </Button>
-        <Button @click="handleTest(PluginTriggerEvent.OnReady)" type="link" size="small">
-          {{ t('plugin.on::ready') }}
-        </Button>
-        <Button @click="handleTest(PluginTriggerEvent.OnTask)" type="link" size="small">
-          {{ t('plugin.on::task') }}
-        </Button>
-        <Button @click="handleTest(PluginTriggerEvent.OnConfigure)" type="link" size="small">
-          {{ t('plugin.on::configure') }}
-        </Button>
-        <Button @click="handleTest(PluginTriggerEvent.OnSubscribe)" type="link" size="small">
-          {{ t('plugin.on::subscribe') }}
-        </Button>
-        <Button @click="handleTest(PluginTriggerEvent.OnGenerate)" type="link" size="small">
-          {{ t('plugin.on::generate') }}
-        </Button>
-      </template>
-    </Dropdown>
-    <Button @click="handleCancel" :disabled="loading">
-      {{ t('common.cancel') }}
-    </Button>
-    <Button @click="handleSave" :loading="loading" type="primary">
-      {{ t('common.save') }}
-    </Button>
-  </div>
+  <CodeEditor v-model="code" :plugin="metadata" lang="javascript" editable />
 </template>
-
-<style lang="less" scoped>
-.plugin-view {
-  display: flex;
-  flex-direction: column;
-  padding: 0 8px;
-  overflow-y: auto;
-  max-height: 70vh;
-}
-</style>

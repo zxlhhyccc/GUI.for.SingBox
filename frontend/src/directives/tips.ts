@@ -1,7 +1,7 @@
 import { type Directive, type DirectiveBinding } from 'vue'
 
-import { debounce } from '@/utils'
 import { useAppStore } from '@/stores'
+import { debounce } from '@/utils'
 
 export default {
   mounted(el: HTMLElement, binding: DirectiveBinding) {
@@ -18,8 +18,10 @@ export default {
     }, delay)
 
     el.onmouseenter = (e: MouseEvent) => {
-      el.dataset.showTips = 'true'
-      show(e.clientX, e.clientY)
+      if (binding.value) {
+        el.dataset.showTips = 'true'
+        show(e.clientX, e.clientY)
+      }
     }
 
     el.onmouseleave = () => {
@@ -31,5 +33,5 @@ export default {
     const appStore = useAppStore()
     appStore.tipsShow = false
     el.dataset.showTips = 'false'
-  }
+  },
 } as Directive

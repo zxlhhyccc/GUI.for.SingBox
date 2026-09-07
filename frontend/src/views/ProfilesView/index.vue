@@ -1,47 +1,64 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import { useI18n, I18nT } from 'vue-i18n'
 
 import { ClipboardSetText } from '@/bridge'
-import { useMessage, useAlert } from '@/hooks'
-import { DraggableOptions, View } from '@/constant'
-import { debounce, deepClone, generateConfig, sampleID } from '@/utils'
+import { DraggableOptions, ViewOptions } from '@/constant/app'
+import { View } from '@/enums/app'
 import {
-  type ProfileType,
-  type Menu,
   useProfilesStore,
   useAppSettingsStore,
   useKernelApiStore,
-  useSubscribesStore
+  useSubscribesStore,
+  usePluginsStore,
+  useAppStore,
 } from '@/stores'
+import { debounce, deepClone, generateConfig, message, sampleID, alert, modal } from '@/utils'
 
+import ProfileEditor from './components/ProfileEditor.vue'
 import ProfileForm from './components/ProfileForm.vue'
 
-const profileID = ref()
-const profileStep = ref(0)
-const showForm = ref(false)
-const isUpdate = ref(false)
-
 const { t } = useI18n()
-const { message } = useMessage()
-const { alert } = useAlert()
+const appStore = useAppStore()
 const profilesStore = useProfilesStore()
 const subscribesStore = useSubscribesStore()
 const appSettingsStore = useAppSettingsStore()
 const kernelApiStore = useKernelApiStore()
+const pluginsStore = usePluginsStore()
 
-const secondaryMenus: Menu[] = [
+const menuList: App.Menu[] = [
+  'profile.step.name',
+  'profile.step.general',
+  'profile.step.inbounds',
+  'profile.step.outbounds',
+  'profile.step.route',
+  'profile.step.dns',
+  'profile.step.mixin-script',
+].map((v, i) => {
+  return {
+    label: v,
+    handler: (id: string) => {
+      const p = profilesStore.getProfileById(id)
+      p && handleShowProfileForm(p.id, i)
+    },
+  }
+})
+
+const secondaryMenusList: App.Menu[] = [
   {
     label: 'profiles.start',
     handler: async (id: string) => {
       appSettingsStore.app.kernel.profile = id
       try {
-        await kernelApiStore.startKernel()
+        const e = await kernelApiStore.stopCore().catch((e) => e)
+        if (e && e !== 'The core is not running') {
+          throw e
+        }
+        await kernelApiStore.startCore()
       } catch (error: any) {
         message.error(error)
         console.error(error)
       }
-    }
+    },
   },
   {
     label: 'profiles.copy',
@@ -51,7 +68,7 @@ const secondaryMenus: Menu[] = [
       p.name = p.name + '(Copy)'
       profilesStore.addProfile(p)
       message.success('common.success')
-    }
+    },
   },
   {
     label: 'profiles.copytoClipboard',
@@ -66,7 +83,7 @@ const secondaryMenus: Menu[] = [
       } catch (error: any) {
         message.error(error.message || error)
       }
-    }
+    },
   },
   {
     label: 'profiles.generateAndView',
@@ -78,55 +95,79 @@ const secondaryMenus: Menu[] = [
       } catch (error: any) {
         message.error(error.message || error)
       }
-    }
-  }
-]
-
-const menus: Menu[] = [
-  ...[
-    'profile.step.name',
-    'profile.step.general',
-    'profile.step.tun',
-    'profile.step.groups',
-    'profile.step.rules',
-    'profile.step.dns',
-    'profile.step.dnsRules',
-    'profile.step.mixin-script'
-  ].map((v, i) => {
-    return {
-      label: v,
-      handler: (id: string) => {
-        const p = profilesStore.getProfileById(id)
-        p && handleEditProfile(p, i)
-      }
-    }
-  }),
-  {
-    label: '',
-    separator: true
+    },
   },
   {
-    label: 'common.more',
-    children: secondaryMenus
-  }
+    label: 'profiles.editSourceFile',
+    handler: async (id: string) => {
+      const profile = profilesStore.getProfileById(id)!
+      const m = modal({ title: profile.name, width: '90', height: '90' })
+      m.setContent(ProfileEditor, { profile }).open()
+    },
+  },
 ]
 
-const handleAddProfile = async () => {
-  isUpdate.value = false
-  profileStep.value = 0
-  showForm.value = true
+const generateMenus = (profile: App.Profile) => {
+  const moreMenus: App.Menu[] = secondaryMenusList.map((v) => ({
+    ...v,
+    handler: () => v.handler?.(profile.id),
+  }))
+  const builtInMenus: App.Menu[] = [
+    ...menuList.map((v) => ({ ...v, handler: () => v.handler?.(profile.id) })),
+    {
+      label: '',
+      separator: true,
+    },
+    {
+      label: 'common.more',
+      children: moreMenus,
+    },
+  ]
+
+  const contextMenus = pluginsStore.plugins.filter(
+    (plugin) => Object.keys(plugin.context.profiles).length !== 0,
+  )
+
+  if (contextMenus.length !== 0) {
+    moreMenus.push(
+      {
+        label: '',
+        separator: true,
+      },
+      ...contextMenus.reduce((prev, plugin) => {
+        const menus = Object.entries(plugin.context.profiles)
+        return prev.concat(
+          menus.map(([title, fn]) => {
+            return {
+              label: title,
+              handler: async () => {
+                try {
+                  plugin.running = true
+                  await pluginsStore.manualTrigger(plugin.id, fn as any, profile)
+                } catch (error: any) {
+                  message.error(error)
+                } finally {
+                  plugin.running = false
+                }
+              },
+            }
+          }),
+        )
+      }, [] as App.Menu[]),
+    )
+  }
+
+  return builtInMenus
 }
 
-const handleEditProfile = (p: ProfileType, step = 0) => {
-  isUpdate.value = true
-  profileID.value = p.id
-  profileStep.value = step
-  showForm.value = true
+const handleShowProfileForm = (id?: string, step = 0) => {
+  const m = modal({ title: id ? 'common.edit' : 'common.add', minWidth: '70' })
+  m.setContent(ProfileForm, { id, step }).open()
 }
 
-const handleDeleteProfile = async (p: ProfileType) => {
-  const { profile, running } = appSettingsStore.app.kernel
-  if (profile === p.id && running) {
+const handleDeleteProfile = async (p: App.Profile) => {
+  const { profile } = appSettingsStore.app.kernel
+  if (profile === p.id && kernelApiStore.running) {
     message.warn('profiles.shouldStop')
     return
   }
@@ -139,20 +180,13 @@ const handleDeleteProfile = async (p: ProfileType) => {
   }
 }
 
-const handleUseProfile = async (p: ProfileType) => {
+const handleUseProfile = async (p: App.Profile) => {
   if (appSettingsStore.app.kernel.profile === p.id) return
 
   appSettingsStore.app.kernel.profile = p.id
 
-  if (appSettingsStore.app.kernel.running) {
-    await kernelApiStore.restartKernel()
-  }
-}
-
-const onEditProfileEnd = async () => {
-  const { running, profile } = appSettingsStore.app.kernel
-  if (running && profile === profileID.value) {
-    await kernelApiStore.restartKernel()
+  if (kernelApiStore.running) {
+    await kernelApiStore.restartCore()
   }
 }
 
@@ -169,25 +203,22 @@ const onSortUpdate = debounce(profilesStore.saveProfiles, 1000)
   <div v-if="profilesStore.profiles.length === 0" class="grid-list-empty">
     <Empty>
       <template #description>
-        <I18nT keypath="profiles.empty" tag="p" scope="global">
+        <I18nT keypath="profiles.empty" tag="div" scope="global" class="flex items-center mt-12">
           <template #action>
-            <Button @click="handleAddProfile" type="link">{{ t('common.add') }}</Button>
+            <Button type="link" @click="handleShowProfileForm()">{{ t('common.add') }}</Button>
           </template>
         </I18nT>
+        <div class="flex items-center">
+          <CustomAction :actions="appStore.customActions.profiles_header" />
+        </div>
       </template>
     </Empty>
   </div>
 
   <div v-else class="grid-list-header">
-    <Radio
-      v-model="appSettingsStore.app.profilesView"
-      :options="[
-        { label: 'common.grid', value: View.Grid },
-        { label: 'common.list', value: View.List }
-      ]"
-      class="mr-auto"
-    />
-    <Button @click="handleAddProfile" type="primary">
+    <Radio v-model="appSettingsStore.app.profilesView" :options="ViewOptions" class="mr-auto" />
+    <CustomAction :actions="appStore.customActions.profiles_header" />
+    <Button type="primary" icon="add" @click="handleShowProfileForm()">
       {{ t('common.add') }}
     </Button>
   </div>
@@ -199,93 +230,81 @@ const onSortUpdate = debounce(profilesStore.saveProfiles, 1000)
     <Card
       v-for="p in profilesStore.profiles"
       :key="p.id"
+      v-menu="generateMenus(p)"
       :title="p.name"
       :selected="appSettingsStore.app.kernel.profile === p.id"
+      class="grid-list-item"
       @dblclick="handleUseProfile(p)"
-      v-menu="
-        menus.map((v) => ({
-          ...v,
-          handler: () => v.handler?.(p.id),
-          children: v.children?.map((vv) => ({ ...vv, handler: () => vv.handler?.(p.id) }))
-        }))
-      "
-      class="item"
     >
       <template #title-prefix>
         <Tag
           v-if="isCreatedBySubscription(p.id)"
-          @click="showAuto"
           color="primary"
+          size="small"
           style="margin-left: 0"
+          @click="showAuto"
         >
           {{ t('common.auto') }}
         </Tag>
       </template>
 
       <template v-if="appSettingsStore.app.profilesView === View.Grid" #extra>
-        <Dropdown :trigger="['hover', 'click']">
+        <Dropdown>
           <Button type="link" size="small" icon="more" />
           <template #overlay>
-            <Button @click="handleUseProfile(p)" type="link" size="small">
-              {{ t('common.use') }}
-            </Button>
-            <Button @click="handleEditProfile(p)" type="link" size="small">
-              {{ t('common.edit') }}
-            </Button>
-            <Button @click="handleDeleteProfile(p)" type="link" size="small">
-              {{ t('common.delete') }}
-            </Button>
+            <div class="flex flex-col gap-4 min-w-64 p-4">
+              <Button type="text" @click="handleUseProfile(p)">
+                {{ t('common.use') }}
+              </Button>
+              <Button type="text" @click="handleShowProfileForm(p.id)">
+                {{ t('common.edit') }}
+              </Button>
+              <Button type="text" @click="handleDeleteProfile(p)">
+                {{ t('common.delete') }}
+              </Button>
+            </div>
           </template>
         </Dropdown>
       </template>
 
       <template v-else #extra>
-        <Button @click="handleUseProfile(p)" type="link" size="small">
+        <Button type="text" size="small" @click="handleUseProfile(p)">
           {{ t('common.use') }}
         </Button>
-        <Button @click="handleEditProfile(p)" type="link" size="small">
+        <Button type="text" size="small" @click="handleShowProfileForm(p.id)">
           {{ t('common.edit') }}
         </Button>
-        <Button @click="handleDeleteProfile(p)" type="link" size="small">
+        <Button type="text" size="small" @click="handleDeleteProfile(p)">
           {{ t('common.delete') }}
         </Button>
       </template>
       <div>
-        {{ t('profiles.proxyGroups') }}
+        {{ t('profiles.inbounds') }}
         :
-        {{ p.proxyGroupsConfig.length }}
+        {{ p.inbounds.length }}
         /
-        {{ t('profiles.rules') }}
+        {{ t('profiles.outbounds') }}
         :
-        {{ p.rulesConfig.length }}
+        {{ p.outbounds.length }}
       </div>
       <div>
-        TUN :
-        {{ p.tunConfig.enable ? t('common.enabled') : t('common.disabled') }}
-        / DNS :
-        {{ p.dnsConfig.enable ? t('common.enabled') : t('common.disabled') }}
+        {{ t('kernel.route.tab.rule_set') }}
+        :
+        {{ p.route.rule_set.length }}
+        /
+        {{ t('kernel.route.tab.rules') }}
+        :
+        {{ p.route.rules.length }}
       </div>
       <div>
-        Http :
-        {{ p.advancedConfig.port || '--' }}
-        Socks :
-        {{ p.advancedConfig['socks-port'] || '--' }}
-        Mixed :
-        {{ p.generalConfig['mixed-port'] || '--' }}
+        {{ t('profiles.dnsServers') }}
+        :
+        {{ p.dns.servers.length }}
+        /
+        {{ t('profiles.dnsRules') }}
+        :
+        {{ p.dns.rules.length }}
       </div>
     </Card>
   </div>
-
-  <Modal
-    v-model:open="showForm"
-    :footer="false"
-    @ok="onEditProfileEnd"
-    min-width="70"
-    max-width="90"
-    max-height="90"
-  >
-    <ProfileForm :is-update="isUpdate" :id="profileID" :step="profileStep" />
-  </Modal>
 </template>
-
-<style lang="less" scoped></style>

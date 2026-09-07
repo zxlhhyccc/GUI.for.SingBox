@@ -1,110 +1,124 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 
-import { StackOptions } from '@/constant'
+import { TunStackOptions } from '@/constant/kernel'
 import { useKernelApiStore } from '@/stores'
+import { message } from '@/utils'
 
 const { t } = useI18n()
 const kernelApiStore = useKernelApiStore()
 
-const onPortSubmit = (port: number) => kernelApiStore.updateConfig('http-port', port)
-const onSocksPortSubmit = (port: number) => kernelApiStore.updateConfig('socks-port', port)
-const onMixedPortSubmit = (port: number) => kernelApiStore.updateConfig('mixed-port', port)
-const onAllowLanChange = (allow: boolean) => kernelApiStore.updateConfig('allow-lan', allow)
-const conStackChange = (stack: string) => kernelApiStore.updateConfig('tun-stack', stack)
-const onTunDeviceSubmit = (device: string) => kernelApiStore.updateConfig('tun-device', device)
-const onInterfaceChange = (name: string) => kernelApiStore.updateConfig('interface-name', name)
-const onFakeIpChange = (name: string) => kernelApiStore.updateConfig('fakeip', name)
+const createValueWatcher = (
+  initialValue: number | string | boolean,
+  callback: (value: number | string | boolean) => Promise<void>,
+) => {
+  let lastValue = initialValue
+  return (newValue: number | boolean) => {
+    if (newValue !== lastValue) {
+      lastValue = newValue
+      callback(newValue).catch((e) => message.error(e.message || e))
+    }
+  }
+}
+
+const onPortSubmit = createValueWatcher(kernelApiStore.config.port, (port) =>
+  kernelApiStore.updateConfig('http', port),
+)
+const onSocksPortSubmit = createValueWatcher(kernelApiStore.config['socks-port'], (port) =>
+  kernelApiStore.updateConfig('socks', port),
+)
+const onMixedPortSubmit = createValueWatcher(kernelApiStore.config['mixed-port'], (port) =>
+  kernelApiStore.updateConfig('mixed', port),
+)
+const onAllowLanChange = createValueWatcher(kernelApiStore.config['allow-lan'], (allow) =>
+  kernelApiStore.updateConfig('allow-lan', allow),
+)
+const conStackChange = createValueWatcher(kernelApiStore.config.tun.stack, (stack) =>
+  kernelApiStore.updateConfig('tun-stack', { stack }),
+)
+const onTunDeviceSubmit = createValueWatcher(kernelApiStore.config.tun.device, (device) =>
+  kernelApiStore.updateConfig('tun-device', { device }),
+)
+const onInterfaceChange = createValueWatcher(
+  kernelApiStore.config['interface-name'],
+  (interface_name) => kernelApiStore.updateConfig('interface-name', { interface_name }),
+)
 </script>
 
 <template>
-  <div class="card-list">
-    <Divider class="w-full mb-8">
-      {{ t('home.overview.settingsTips') }}
-    </Divider>
-
-    <Card :title="t('kernel.mixed-port')" class="card-item">
-      <Input
-        v-model="kernelApiStore.config['mixed-port']"
-        :min="0"
-        :max="65535"
-        @submit="onMixedPortSubmit"
-        type="number"
-        :border="false"
-        editable
-        auto-size
-      />
-    </Card>
-    <Card :title="t('kernel.port')" class="card-item">
-      <Input
-        v-model="kernelApiStore.config.port"
-        :min="0"
-        :max="65535"
-        @submit="onPortSubmit"
-        type="number"
-        :border="false"
-        editable
-        auto-size
-      />
-    </Card>
-    <Card :title="t('kernel.socks-port')" class="card-item">
-      <Input
-        v-model="kernelApiStore.config['socks-port']"
-        :min="0"
-        :max="65535"
-        @submit="onSocksPortSubmit"
-        type="number"
-        editable
-        :border="false"
-        auto-size
-      />
-    </Card>
-    <Card :title="t('kernel.allow-lan')" class="card-item">
-      <Switch v-model="kernelApiStore.config['allow-lan']" @change="onAllowLanChange" />
-    </Card>
-
-    <div class="w-full mt-8"></div>
-
-    <Card :title="t('kernel.tun.stack')" class="card-item">
-      <Select
-        v-model="kernelApiStore.config.tun.stack"
-        :options="StackOptions"
-        :border="false"
-        auto-size
-        @change="conStackChange"
-      />
-    </Card>
-    <Card :title="t('kernel.tun.interface-name')" class="card-item">
-      <Input
-        v-model="kernelApiStore.config.tun.device"
-        @submit="onTunDeviceSubmit"
-        editable
-        :border="false"
-        auto-size
-      />
-    </Card>
-    <Card :title="t('kernel.interface-name')" class="card-item">
-      <InterfaceSelect
-        v-model="kernelApiStore.config['interface-name']"
-        :border="false"
-        auto-size
-        @change="onInterfaceChange"
-      />
-    </Card>
-    <Card title="Fake-IP" class="card-item">
-      <Switch v-model="kernelApiStore.config.fakeip" @change="onFakeIpChange" />
-    </Card>
+  <div>
+    <Divider class="w-full mb-8"> {{ t('home.overview.settingsTips') }} </Divider>
+    <div class="grid grid-cols-4 gap-8 pb-16">
+      <Card :title="t('kernel.inbounds.mixedPort')">
+        <Input
+          v-model="kernelApiStore.config['mixed-port']"
+          :min="0"
+          :max="65535"
+          type="number"
+          :border="false"
+          editable
+          auto-size
+          class="w-full"
+          @submit="onMixedPortSubmit"
+        />
+      </Card>
+      <Card :title="t('kernel.inbounds.httpPort')">
+        <Input
+          v-model="kernelApiStore.config.port"
+          :min="0"
+          :max="65535"
+          type="number"
+          :border="false"
+          editable
+          auto-size
+          class="w-full"
+          @submit="onPortSubmit"
+        />
+      </Card>
+      <Card :title="t('kernel.inbounds.socksPort')">
+        <Input
+          v-model="kernelApiStore.config['socks-port']"
+          :min="0"
+          :max="65535"
+          type="number"
+          editable
+          :border="false"
+          auto-size
+          class="w-full"
+          @submit="onSocksPortSubmit"
+        />
+      </Card>
+      <Card :title="t('kernel.allow-lan')">
+        <Switch v-model="kernelApiStore.config['allow-lan']" @change="onAllowLanChange" />
+      </Card>
+      <Card :title="t('kernel.inbounds.tun.stack')">
+        <Select
+          v-model="kernelApiStore.config.tun.stack"
+          :options="TunStackOptions"
+          :border="false"
+          auto-size
+          @change="conStackChange"
+        />
+      </Card>
+      <Card :title="t('kernel.inbounds.tun.interface_name')">
+        <Input
+          v-model="kernelApiStore.config.tun.device"
+          editable
+          :border="false"
+          auto-size
+          class="w-full"
+          @submit="onTunDeviceSubmit"
+        />
+      </Card>
+      <Card :title="t('kernel.route.default_interface')">
+        <InterfaceSelect
+          v-model="kernelApiStore.config['interface-name']"
+          :border="false"
+          auto-size
+          @change="onInterfaceChange"
+        />
+      </Card>
+      <Card :title="t('common.none')"> </Card>
+    </div>
   </div>
 </template>
-
-<style lang="less" scoped>
-.card-list {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  padding-bottom: 16px;
-  .card-item {
-    width: 24%;
-  }
-}
-</style>

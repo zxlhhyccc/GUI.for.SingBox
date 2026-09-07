@@ -1,45 +1,68 @@
-import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
+import { ref, watch } from 'vue'
 
-import { GetEnv } from '@/bridge'
-import { updateTrayMenus } from '@/utils'
-import { useKernelApiStore } from '@/stores'
-import { SetSystemProxy, GetSystemProxy } from '@/utils'
+import { GetEnv, GetSystemProxy, SetSystemDNS, SetSystemProxy } from '@/bridge'
+import { OS } from '@/enums/app'
+import { useAppSettingsStore, useKernelApiStore } from '@/stores'
+import { formatProxyHost, ignoredError, updateTrayAndMenus } from '@/utils'
 
 export const useEnvStore = defineStore('env', () => {
-  const env = ref({
+  const appSettings = useAppSettingsStore()
+  const kernelApiStore = useKernelApiStore()
+
+  const env = ref<App.AppEnv>({
     appName: '',
+    appVersion: '',
     basePath: '',
-    os: '',
+    appPath: '',
+    os: '' as App.OS,
     arch: '',
-    x64Level: 0
+    isPrivileged: false,
   })
 
   const systemProxy = ref(false)
+  const systemDNSSet = ref(false)
 
   const setupEnv = async () => {
     const _env = await GetEnv()
-    env.value = _env
+    let appPath = `${_env.basePath}/${_env.appName}`
+    if (_env.os === OS.Windows) {
+      appPath = appPath.replaceAll('/', '\\')
+    } else if (_env.os === OS.Darwin) {
+      appPath = appPath.replace(`/Contents/MacOS/${_env.appName}`, '')
+    }
+    env.value = { ..._env, appPath }
   }
 
   const updateSystemProxyStatus = async () => {
     const kernelApiStore = useKernelApiStore()
-    const proxyServer = await GetSystemProxy()
+    const proxyServer = (await ignoredError(GetSystemProxy)) || ''
 
     if (!proxyServer) {
       systemProxy.value = false
     } else {
-      const { port, 'mixed-port': mixedPort, 'socks-port': socksPort } = kernelApiStore.config
+      const kernelProxy = kernelApiStore.getProxyEndpoint()
+      if (!kernelProxy) {
+        systemProxy.value = false
+        return systemProxy.value
+      }
+
+      const { host, port, proxyType } = kernelProxy
+      const server = `${formatProxyHost(host)}:${port}`
       const proxyServerList = [
-        `http://127.0.0.1:${port}`,
-        `http://127.0.0.1:${mixedPort}`,
-
-        `socks5://127.0.0.1:${mixedPort}`,
-        `socks5://127.0.0.1:${socksPort}`,
-
-        `socks=127.0.0.1:${mixedPort}`,
-        `socks=127.0.0.1:${socksPort}`
+        `http://${server}`,
+        `https://${server}`,
+        `socks5://${server}`,
+        `socks=${server}`,
       ]
+      if (proxyType === 'mixed') {
+        proxyServerList.push(
+          `http://127.0.0.1:${port}`,
+          `https://127.0.0.1:${port}`,
+          `socks5://127.0.0.1:${port}`,
+          `socks=127.0.0.1:${port}`,
+        )
+      }
       systemProxy.value = proxyServerList.includes(proxyServer)
     }
 
@@ -47,16 +70,23 @@ export const useEnvStore = defineStore('env', () => {
   }
 
   const setSystemProxy = async () => {
-    const proxyPort = useKernelApiStore().getProxyPort()
-    if (!proxyPort) throw 'home.overview.needPort'
-
-    await SetSystemProxy(true, '127.0.0.1:' + proxyPort.port, proxyPort.proxyType)
-
+    const proxyBypassList = appSettings.app.proxyBypassList
+    const services = appSettings.app.systemProxyServices
+    let proxyEndpoint = kernelApiStore.getProxyEndpoint()
+    if (!proxyEndpoint) {
+      await kernelApiStore.updateConfig('inbound', undefined)
+    }
+    proxyEndpoint = kernelApiStore.getProxyEndpoint()
+    if (!proxyEndpoint) throw 'home.overview.needPort'
+    const server = `${formatProxyHost(proxyEndpoint.host)}:${proxyEndpoint.port}`
+    await SetSystemProxy(true, server, proxyEndpoint.proxyType, proxyBypassList, services)
     systemProxy.value = true
   }
 
   const clearSystemProxy = async () => {
-    await SetSystemProxy(false, '')
+    const proxyBypassList = appSettings.app.proxyBypassList
+    const services = appSettings.app.systemProxyServices
+    await SetSystemProxy(false, '', undefined, proxyBypassList, services)
     systemProxy.value = false
   }
 
@@ -65,15 +95,25 @@ export const useEnvStore = defineStore('env', () => {
     else await clearSystemProxy()
   }
 
-  watch(systemProxy, updateTrayMenus)
+  const setSystemDNS = async (proxy: boolean) => {
+    const supportedSystems: App.OS[] = [OS.Linux, OS.Darwin]
+    if (!supportedSystems.includes(env.value.os)) return
+    const servers = proxy ? appSettings.app.systemProxyDNS : appSettings.app.systemDefaultDNS
+    await SetSystemDNS(servers, appSettings.app.systemProxyServices)
+    systemDNSSet.value = proxy
+  }
+
+  watch(systemProxy, updateTrayAndMenus)
 
   return {
     env,
     setupEnv,
     systemProxy,
+    systemDNSSet,
     setSystemProxy,
     clearSystemProxy,
     switchSystemProxy,
-    updateSystemProxyStatus
+    updateSystemProxyStatus,
+    setSystemDNS,
   }
 })
